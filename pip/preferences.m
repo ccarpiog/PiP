@@ -14,11 +14,25 @@
 
 Preferences* global_pref = nil;
 
+NSArray* getDisplayList(void){
+  NSMutableArray* displays = [[NSMutableArray alloc] init];
+  [displays addObject:@{@"name": @"Ninguno", @"id": @-1}];
+  for(NSScreen* screen in [NSScreen screens]){
+    NSDictionary* dict = [screen deviceDescription];
+    CGDirectDisplayID did = [dict[@"NSScreenNumber"] intValue];
+    NSString* name = @"Display";
+    if (@available(macOS 10.15, *)) name = [screen localizedName];
+    [displays addObject:@{@"name": name, @"id": [NSNumber numberWithUnsignedInt:did]}];
+  }
+  return displays;
+}
+
 typedef enum{
   OptionTypeNumber,
   OptionTypeSelect,
   OptionTypeCheckBox,
   OptionTypeTextInput,
+  OptionTypeDisplaySelect,
 } OptionType;
 
 #define OPTION(name, text, type, options, value, desc) \
@@ -28,6 +42,7 @@ static NSArray* getPrefsArray(void){
   NSMutableArray* prefs = [NSMutableArray arrayWithArray:@[
     OPTION(hidpi, "Use HiDPI mode", CheckBox, [NSNull null], @1, @"on supported displays"),
     OPTION(renderer, "Display Renderer", Select, (@[@"Metal", @"Opengl"]), [NSNumber numberWithInt:DisplayRendererTypeOpenGL], [NSNull null]),
+    OPTION(default_display, "Default Display", DisplaySelect, [NSNull null], @-1, [NSNull null]),
     #ifndef NO_AIRPLAY
     OPTION(airplay, "AirPlay Receiver", CheckBox, [NSNull null], @0, @"Use PiP as Airplay receiver"),
     OPTION(airplay_scale_factor, "AirPlay Scale factor", Select, (@[@"1.00", @"2.00", @"3.00", @"Default"]), @3, [NSNull null]),
@@ -171,6 +186,12 @@ NSObject* getPrefOption(NSString* key){
   setPref(sender.identifier, [NSNumber numberWithLong:index]);
 }
 
+- (void)onDisplaySelect:(NSMenuItem*)sender{
+  NSNumber* displayId = [sender representedObject];
+//  NSLog(@"onDisplaySelect: %@ -> %@", sender.identifier, displayId);
+  setPref(sender.identifier, displayId);
+}
+
 - (nullable NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(nullable NSTableColumn *)tableColumn row:(NSInteger)row{
   NSInteger col = [[tableView tableColumns] indexOfObject:tableColumn];
 //  NSLog(@"row: %ld, col: %ld", row, col);
@@ -222,6 +243,27 @@ NSObject* getPrefOption(NSString* key){
       }
       case OptionTypeTextInput:
         break;
+      case OptionTypeDisplaySelect:{
+        NSPopUpButton* button = [[NSPopUpButton alloc] init];
+        button.translatesAutoresizingMaskIntoConstraints = false;
+        button.menu = [[NSMenu alloc] init];
+
+        NSArray* displays = getDisplayList();
+        int savedDisplayId = [(NSNumber*)value intValue];
+        int selectedIndex = 0;
+        for(int i = 0; i < displays.count; i++){
+          NSDictionary* display = displays[i];
+          NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:display[@"name"] action:@selector(onDisplaySelect:) keyEquivalent:@""];
+          item.target = self;
+          item.identifier = key;
+          item.representedObject = display[@"id"];
+          [button.menu addItem:item];
+          if([display[@"id"] intValue] == savedDisplayId) selectedIndex = i;
+        }
+        [button selectItem:[button.menu itemArray][selectedIndex]];
+        view = button;
+        break;
+      }
     }
   }
   if(!view) goto end;
