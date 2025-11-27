@@ -1060,6 +1060,24 @@ static NSImage* hls_button_image(NSImage* img){
 
   [self setupNonHLSControls];
 
+  if(!is_airplay_session){
+    int defaultDisplayId = [(NSNumber*)getPref(@"default_display") intValue];
+    if(defaultDisplayId > 0){
+      NSArray* displays = getDisplayList();
+      for(NSDictionary* display in displays){
+        if([display[@"id"] intValue] == defaultDisplayId){
+          WindowSel* sel = [WindowSel getDefault];
+          sel.title = display[@"name"];
+          sel.dspId = defaultDisplayId;
+          NSMenuItem* item = [[NSMenuItem alloc] init];
+          [item setRepresentedObject:sel];
+          [self changeWindow:item];
+          break;
+        }
+      } // End of loop through displays
+    }
+  } // End of if not airplay session
+
   return self;
 }
 

@@ -18,6 +18,7 @@ typedef enum{
 NSObject* getPref(NSString* key);
 NSObject* getPrefOption(NSString* key);
 void setPref(NSString* key, NSObject* val);
+NSArray* getDisplayList(void);
 
 @interface Preferences : NSPanel<NSWindowDelegate, NSTableViewDelegate, NSTableViewDataSource>
 
