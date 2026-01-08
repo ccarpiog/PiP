@@ -4,7 +4,7 @@ project(PiP)
 
 add_compile_options(-fobjc-arc -Wno-deprecated-declarations -Wno-format)
 
-set(frameworks Cocoa VideoToolbox AudioToolbox CoreMedia QuartzCore OpenGL Metal MetalKit PIP SkyLight)
+set(frameworks AVFoundation Cocoa VideoToolbox AudioToolbox CoreMedia QuartzCore OpenGL Metal MetalKit PIP SkyLight)
 list(TRANSFORM frameworks PREPEND "-framework ")
 
 set(AIRPLAY_SUPPORT_ENABLED 1)

@@ -11,6 +11,7 @@
 #import "window.h"
 #import "audioPlayer.h"
 #import "H264Decoder.h"
+#import "HLSPlayer.h"
 
 #define INCBIN_SILENCE_BITCODE_WARNING
 #include "incbin.h"
@@ -32,6 +33,7 @@ INC_IMG(pop_in);
 INC_IMG(pop_out);
 INC_IMG(display);
 INC_IMG(windows);
+INC_IMG(hls);
 
 #define DEFAULT_TITLE @"(right click to begin)"
 
@@ -415,6 +417,12 @@ static NSImage* get_rel_image(NSImage* img){
 
   AudioPlayer* audPlayer;
   H264Decoder* h264decoder;
+  HLSPlayer* hlsPlayer;
+
+  NSView* hlsInputView;
+  NSTextField* hlsInputField;
+  NSButton* hlsLoadButton;
+  NSButton* hlsCancelButton;
 
   NSTimer* mouse_timer;
   bool mouse_timer_rerun;
@@ -423,6 +431,7 @@ static NSImage* get_rel_image(NSImage* img){
   bool was_floating;
   bool is_playing;
   bool is_airplay_session;
+  bool is_hls_session;
   bool shouldEnableFullScreen;
 
   int owner_pid;
@@ -440,11 +449,12 @@ static NSImage* get_rel_image(NSImage* img){
   isWinClosing = false;
   isPipCLosing = false;
   was_floating = false;
-  
+
   airplay_title = title;
   display_stream = NULL;
 
   shouldEnableFullScreen = is_playing = is_airplay_session = enable;
+  is_hls_session = false;
   is_hidpi = [(NSNumber*)getPref(@"hidpi") intValue] > 0 && !is_airplay_session;
 
   self = [super initWithContentRect:kStartRect styleMask:kWindowMask backing:NSBackingStoreBuffered defer:YES];
@@ -545,6 +555,24 @@ static NSImage* get_rel_image(NSImage* img){
   [self resetPlaybackSate];
 
   return self;
+}
+
+- (void) loadHLSURL:(NSURL*)url {
+  NSMenuItem* item = [[NSMenuItem alloc] init];
+  [item setTarget:self];
+  [item setRepresentedObject:[WindowSel getDefault]];
+  [self changeWindow:item];
+
+  is_hls_session = true;
+  is_playing = true;
+  is_hidpi = false; // HLS streams typically have fixed resolution
+
+  hlsPlayer = [[HLSPlayer alloc] initWithURL:url];
+  hlsPlayer.delegate = self;
+
+  imageView.hidden = NO;
+  [self resetPlaybackSate];
+  [self setOwner:@"HLS" withTitle:[url absoluteString]];
 }
 
 - (BOOL) canBecomeKeyWindow{
@@ -677,8 +705,12 @@ static NSImage* get_rel_image(NSImage* img){
 
 - (void)togglePlayback{
   if(isWinClosing) return;
-  if(is_airplay_session || display_id >= 0){
+  if(is_airplay_session || display_id >= 0 || is_hls_session){
     is_playing = !is_playing;
+    if(is_hls_session) {
+      if(is_playing) [hlsPlayer play];
+      else [hlsPlayer pause];
+    }
     [self resetPlaybackSate];
   }
   else{
@@ -805,6 +837,41 @@ static NSImage* get_rel_image(NSImage* img){
 
 - (void) setVolume:(float)volume{
   [audPlayer setVolume:volume];
+  if(hlsPlayer) [hlsPlayer setVolume:volume];
+}
+
+- (void)hlsPlayerDidUpdateFrame:(CIImage *)image {
+    if(!is_playing || isWinClosing) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        CGRect extent = [image extent];
+        if(extent.size.width > 0 && extent.size.height > 0) {
+            NSSize videoSize = NSMakeSize(extent.size.width, extent.size.height);
+            NSSize currentAR = self.aspectRatio;
+            // Update aspect ratio if it hasn't been set or if it changed
+            if(currentAR.width * currentAR.height == 0 ||
+               fabs(currentAR.width / currentAR.height - videoSize.width / videoSize.height) > 0.01) {
+                [self onResize:videoSize andAspectRatio:videoSize];
+            }
+        }
+        [self->imageView setImage:image];
+    });
+}
+
+- (void)hlsPlayerDidChangeStatus:(AVPlayerItemStatus)status {
+    if(status == AVPlayerItemStatusReadyToPlay) {
+        [hlsPlayer play];
+        CMTime duration = hlsPlayer.duration;
+        if(CMTIME_IS_VALID(duration) && !CMTIME_IS_INDEFINITE(duration)) {
+            NSSize videoSize = NSMakeSize(1920, 1080); // Default, will be updated from frame
+            [self onResize:videoSize andAspectRatio:videoSize];
+        }
+    } else if(status == AVPlayerItemStatusFailed) {
+        NSLog(@"HLS player failed to load");
+    }
+}
+
+- (void)hlsPlayerDidChangeTime:(CMTime)time {
+    // Optional: Update UI with current playback time
 }
 
 - (void) renderAudio:(uint8_t*) data withLength:(size_t) length{
@@ -866,7 +933,7 @@ static NSImage* get_rel_image(NSImage* img){
 }
 
 - (bool)is_capturing{
-  return display_id >= 0 || window_id >= 0;
+  return display_id >= 0 || window_id >= 0 || is_hls_session;
 }
 
 #define ADD_MENU_ITEM(dest, title, actn, img, ...) {\
@@ -1027,8 +1094,10 @@ static NSImage* get_rel_image(NSImage* img){
     })
   }
 
+  ADD_MENU_ITEM(theMenu, @"Stream HLS", @selector(loadHLSStream:), GET_REL_IMG(hls))
 end:
-  if(!pvc && ([self is_capturing] || is_airplay_session)){
+
+  if(!pvc && ([self is_capturing] || is_airplay_session || is_hls_session)){
     NSSize cropSize = [imageView.renderer cropRect].size;
     bool can_crop = cropSize.width * cropSize.height == 0;
     ADD_MENU_ITEM(theMenu, (can_crop ? @"Select region" : @"Deselect region"), can_crop ? @selector(selectRegion:) : @selector(clearSelection:), (can_crop ? GET_REL_IMG(crop) : GET_REL_IMG(uncrop)))
@@ -1090,10 +1159,15 @@ end:
 
 - (void)changeWindow:(id)sender{
   WindowSel* sel = [sender representedObject];
-  if(window_id == sel.winId && display_id == sel.dspId) return;
+  if(window_id == sel.winId && display_id == sel.dspId && !is_hls_session) return;
 
   [self stopTimer];
   [self stopDisplayStream];
+  if(hlsPlayer) {
+    [hlsPlayer stop];
+    hlsPlayer = nil;
+    is_hls_session = false;
+  }
 
   window_id = sel.winId;
   display_id = sel.dspId;
@@ -1147,6 +1221,220 @@ end:
   [self onSelcetion:CGRectZero];
 }
 
+- (void)updateHLSInputViewLayout {
+  if (!hlsInputView) return;
+
+  NSRect windowBounds = [rootView bounds];
+  CGFloat minWidth = 400;
+  CGFloat preferredWidth = 500;
+  CGFloat viewHeight = 120;
+  CGFloat padding = 20;
+
+  // Calculate width that fits in window with padding
+  CGFloat maxWidth = windowBounds.size.width - (padding * 2);
+  CGFloat viewWidth = fmin(fmax(minWidth, preferredWidth), maxWidth);
+
+  // Calculate position to center, but ensure it stays within bounds
+  CGFloat xPos = (windowBounds.size.width - viewWidth) / 2;
+  CGFloat yPos = (windowBounds.size.height - viewHeight) / 2;
+
+  // Ensure view stays within bounds
+  if (xPos < padding) xPos = padding;
+  if (yPos < padding) yPos = padding;
+  if (xPos + viewWidth > windowBounds.size.width - padding) {
+    xPos = windowBounds.size.width - viewWidth - padding;
+  }
+  if (yPos + viewHeight > windowBounds.size.height - padding) {
+    yPos = windowBounds.size.height - viewHeight - padding;
+  }
+
+  NSRect viewRect = NSMakeRect(xPos, yPos, viewWidth, viewHeight);
+  [hlsInputView setFrame:viewRect];
+
+  // Update subviews to fit new width
+  CGFloat contentWidth = viewWidth - 40; // 20px padding on each side
+  if (hlsInputField) {
+    NSRect fieldFrame = [hlsInputField frame];
+    fieldFrame.size.width = contentWidth;
+    [hlsInputField setFrame:fieldFrame];
+  }
+
+  // Update label width
+  NSView *label = [[hlsInputView subviews] firstObject];
+  if (label && [label isKindOfClass:[NSTextField class]]) {
+    NSRect labelFrame = [label frame];
+    labelFrame.size.width = contentWidth;
+    [label setFrame:labelFrame];
+  }
+
+  // Update button positions - position from right edge
+  if (hlsCancelButton) {
+    NSRect cancelFrame = [hlsCancelButton frame];
+    cancelFrame.origin.x = contentWidth - 75 + 20; // Right edge minus button width plus padding
+    [hlsCancelButton setFrame:cancelFrame];
+  }
+
+  if (hlsLoadButton) {
+    NSRect loadFrame = [hlsLoadButton frame];
+    loadFrame.origin.x = contentWidth - 160 + 20; // Right edge minus both buttons width plus padding
+    [hlsLoadButton setFrame:loadFrame];
+  }
+}
+
+- (void)loadHLSStream:(id)sender {
+  // Remove existing input view if present
+  [self dismissHLSInputView];
+
+  if(is_airplay_session) return;
+
+  NSRect windowBounds = [rootView bounds];
+  CGFloat minWidth = 400;
+  CGFloat preferredWidth = 500;
+  CGFloat viewHeight = 120;
+  CGFloat padding = 20;
+
+  // Calculate width that fits in window with padding
+  CGFloat maxWidth = windowBounds.size.width - (padding * 2);
+  CGFloat viewWidth = fmin(fmax(minWidth, preferredWidth), maxWidth);
+
+  // Calculate position to center, but ensure it stays within bounds
+  CGFloat xPos = (windowBounds.size.width - viewWidth) / 2;
+  CGFloat yPos = (windowBounds.size.height - viewHeight) / 2;
+
+  // Ensure view stays within bounds
+  if (xPos < padding) xPos = padding;
+  if (yPos < padding) yPos = padding;
+  if (xPos + viewWidth > windowBounds.size.width - padding) {
+    xPos = windowBounds.size.width - viewWidth - padding;
+  }
+  if (yPos + viewHeight > windowBounds.size.height - padding) {
+    yPos = windowBounds.size.height - viewHeight - padding;
+  }
+
+  NSRect viewRect = NSMakeRect(xPos, yPos, viewWidth, viewHeight);
+
+  // Create container view with semi-transparent background
+  hlsInputView = [[NSView alloc] initWithFrame:viewRect];
+  hlsInputView.wantsLayer = YES;
+  hlsInputView.layer.backgroundColor = [[NSColor colorWithWhite:0.0 alpha:0.85] CGColor];
+  hlsInputView.layer.cornerRadius = 10;
+  hlsInputView.layer.borderWidth = 1;
+  hlsInputView.layer.borderColor = [[NSColor colorWithWhite:0.5 alpha:0.5] CGColor];
+  hlsInputView.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin | NSViewMinYMargin | NSViewMaxYMargin;
+
+  CGFloat contentWidth = viewWidth - 40; // 20px padding on each side
+
+  // Create label
+  NSTextField *label = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 85, contentWidth, 17)];
+  [label setStringValue:@"Enter HLS Stream URL (m3u8):"];
+  [label setBezeled:NO];
+  [label setDrawsBackground:NO];
+  [label setEditable:NO];
+  [label setSelectable:NO];
+  [label setTextColor:[NSColor whiteColor]];
+  [label setFont:[NSFont systemFontOfSize:13]];
+  [hlsInputView addSubview:label];
+
+  // Create text field
+  hlsInputField = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 50, contentWidth, 22)];
+  [hlsInputField setStringValue:@""];
+  [hlsInputField setEditable:YES];
+  [hlsInputField setSelectable:YES];
+  [hlsInputField setBezeled:YES];
+  [hlsInputField setBordered:YES];
+  [hlsInputField setRefusesFirstResponder:NO];
+  [hlsInputField setTarget:self];
+  [hlsInputField setAction:@selector(loadHLSURLFromInput:)];
+  [hlsInputField setUsesSingleLineMode:YES];
+  [hlsInputField setMaximumNumberOfLines:1];
+  [hlsInputField setAutoresizingMask:NSViewWidthSizable];
+
+  NSTextFieldCell *cell = [hlsInputField cell];
+  [cell setEditable:YES];
+  [cell setSelectable:YES];
+  [cell setWraps:NO];
+  [cell setScrollable:YES];
+
+  [hlsInputView addSubview:hlsInputField];
+
+  // Create buttons - position from right edge
+  hlsCancelButton = [[NSButton alloc] initWithFrame:NSMakeRect(contentWidth - 75 + 20, 12, 75, 28)];
+  [hlsCancelButton setTitle:@"Cancel"];
+  [hlsCancelButton setButtonType:NSButtonTypeMomentaryPushIn];
+  [hlsCancelButton setBezelStyle:NSBezelStyleRounded];
+  [hlsCancelButton setKeyEquivalent:@"\e"];
+  [hlsCancelButton setTarget:self];
+  [hlsCancelButton setAction:@selector(dismissHLSInputView:)];
+  [hlsCancelButton setAutoresizingMask:NSViewMinXMargin];
+  [hlsInputView addSubview:hlsCancelButton];
+
+  hlsLoadButton = [[NSButton alloc] initWithFrame:NSMakeRect(contentWidth - 160 + 20, 12, 75, 28)];
+  [hlsLoadButton setTitle:@"Load"];
+  [hlsLoadButton setButtonType:NSButtonTypeMomentaryPushIn];
+  [hlsLoadButton setBezelStyle:NSBezelStyleRounded];
+  [hlsLoadButton setKeyEquivalent:@"\r"];
+  [hlsLoadButton setTarget:self];
+  [hlsLoadButton setAction:@selector(loadHLSURLFromInput:)];
+  [hlsLoadButton setAutoresizingMask:NSViewMinXMargin];
+  [hlsInputView addSubview:hlsLoadButton];
+
+  // Add to root view
+  [rootView addSubview:hlsInputView positioned:NSWindowAbove relativeTo:nil];
+
+  // Observe window resize to update layout
+  [[NSNotificationCenter defaultCenter] addObserver:self
+                                        selector:@selector(windowDidResize:)
+                                        name:NSWindowDidResizeNotification
+                                        object:self];
+
+  // Make text field first responder
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [self makeFirstResponder:hlsInputField];
+    [hlsInputField selectText:nil];
+  });
+}
+
+- (void)windowDidResize:(NSNotification *)notification {
+  [self updateHLSInputViewLayout];
+}
+
+- (void)loadHLSURLFromInput:(id)sender {
+  if (!hlsInputField) return;
+
+  NSString *urlString = [hlsInputField stringValue];
+  if(urlString.length > 0) {
+    NSURL *url = [NSURL URLWithString:urlString];
+    if(url) {
+      [self dismissHLSInputView];
+      [self loadHLSURL:url];
+    } else {
+      // Show error briefly
+      NSBeep();
+      [hlsInputField setStringValue:@""];
+      [hlsInputField setPlaceholderString:@"Invalid URL - please try again"];
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (hlsInputField) {
+          [hlsInputField setPlaceholderString:@""];
+        }
+      });
+    }
+  }
+}
+
+- (void)dismissHLSInputView:(id)sender {
+  [self dismissHLSInputView];
+}
+
+- (void)dismissHLSInputView {
+  if(!hlsInputView) return;
+  [[NSNotificationCenter defaultCenter] removeObserver:self name:NSWindowDidResizeNotification object:self];
+  [hlsInputView removeFromSuperview];
+  hlsInputView = nil;
+  hlsInputField = nil;
+  hlsLoadButton = nil;
+  hlsCancelButton = nil;
+}
+
 - (void)cancel:(id)arg1{}
 
 - (void)windowWillClose:(NSNotification *)notification{
@@ -1163,6 +1451,7 @@ end:
 
 - (void)close{
 //  NSLog(@"close pvc: %d, isPipCLosing: %d, isWinClosing: %d", (int)pvc, isPipCLosing, isWinClosing);
+  [self dismissHLSInputView];
   if(pvc){
     if(!isPipCLosing){
       NSRect rect = [[[pvc view] window] frame];
@@ -1220,6 +1509,10 @@ end:
 
   if(audPlayer) [audPlayer destroy]; audPlayer = nil;
   if(h264decoder) [h264decoder destroy]; h264decoder = nil;
+  if(hlsPlayer) {
+    [hlsPlayer stop];
+    hlsPlayer = nil;
+  }
 
   [super close];
 }

@@ -14,6 +14,7 @@
 #import "imageView.h"
 #import "preferences.h"
 #import "selectionView.h"
+#import "HLSPlayer.h"
 
 @class VButton;
 
@@ -46,12 +47,13 @@
 - (void) setEnable:(bool) en;
 @end
 
-@interface Window : NSPanel<NSWindowDelegate, SelectionViewDelegate, ImageRendererDelegate, WindowDelegate, RootViewDelegate, ButtonDelegate, PIPViewControllerDelegate>
+@interface Window : NSPanel<NSWindowDelegate, SelectionViewDelegate, ImageRendererDelegate, WindowDelegate, RootViewDelegate, ButtonDelegate, PIPViewControllerDelegate, HLSPlayerDelegate>
 @property (nonatomic) void* conn;
 - (id) initWithAirplay:(bool)enable andTitle:(NSString*)title;
 - (void) renderH264:(uint8_t*) data withLength:(size_t) length;
 - (void) renderAudio:(uint8_t*) data withLength:(size_t) length;
 - (void) setVolume:(float)volume;
 - (void) setAudioInputFormat:(UInt32)format withsampleRate:(UInt32)sampleRate andChannels:(UInt32)channelCount andSPF:(UInt32)spf;
+- (void) loadHLSURL:(NSURL*)url;
 @end
 #endif /* Window_h */

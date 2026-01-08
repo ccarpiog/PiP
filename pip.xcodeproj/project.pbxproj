@@ -121,6 +121,7 @@
 		5547F71C28144D4E00E22975 /* xplist.c in Sources */ = {isa = PBXBuildFile; fileRef = 5547F70328144D4E00E22975 /* xplist.c */; };
 		5547F71E28144E8200E22975 /* receiver.m in Sources */ = {isa = PBXBuildFile; fileRef = 5547F71D28144E8200E22975 /* receiver.m */; };
 		5547F7272814679C00E22975 /* H264Decoder.m in Sources */ = {isa = PBXBuildFile; fileRef = 5547F7252814679C00E22975 /* H264Decoder.m */; };
+		5547F7292814679D00E22975 /* HLSPlayer.m in Sources */ = {isa = PBXBuildFile; fileRef = 5547F72A2814679D00E22975 /* HLSPlayer.m */; };
 		554AA7FC1FDDB16200233377 /* Media.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 554AA7FB1FDDB16200233377 /* Media.xcassets */; };
 		55851A0625C4180500AC5A8B /* SkyLight.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 558519F625C3FFCF00AC5A8B /* SkyLight.framework */; };
 		559059281FDD13810003B647 /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = 55ABC4BB1FD2CB91005278DB /* main.m */; };
@@ -252,6 +253,8 @@
 		5547F71D28144E8200E22975 /* receiver.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = receiver.m; sourceTree = "<group>"; };
 		5547F7252814679C00E22975 /* H264Decoder.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = H264Decoder.m; sourceTree = "<group>"; };
 		5547F7262814679C00E22975 /* H264Decoder.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = H264Decoder.h; sourceTree = "<group>"; };
+		5547F72A2814679D00E22975 /* HLSPlayer.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = HLSPlayer.m; sourceTree = "<group>"; };
+		5547F72B2814679D00E22975 /* HLSPlayer.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = HLSPlayer.h; sourceTree = "<group>"; };
 		554AA7DC1FDDADEE00233377 /* info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = info.plist; sourceTree = "<group>"; };
 		554AA7FB1FDDB16200233377 /* Media.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Media.xcassets; sourceTree = "<group>"; };
 		558519F625C3FFCF00AC5A8B /* SkyLight.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SkyLight.framework; path = /System/Library/PrivateFrameworks/SkyLight.framework; sourceTree = "<group>"; };
@@ -493,6 +496,8 @@
 			children = (
 				5547F7262814679C00E22975 /* H264Decoder.h */,
 				5547F7252814679C00E22975 /* H264Decoder.m */,
+				5547F72B2814679D00E22975 /* HLSPlayer.h */,
+				5547F72A2814679D00E22975 /* HLSPlayer.m */,
 				55ABC4BB1FD2CB91005278DB /* main.m */,
 				55FEB9212115ECCC00D8350C /* pip.h */,
 				551EB2A5243B49AB002C6D34 /* cgs.h */,
@@ -694,6 +699,7 @@
 				55B3031E28170EFF00E54502 /* audioPlayer.m in Sources */,
 				55E7C03E246D4E6900BE7DD9 /* openGLRenderer.m in Sources */,
 				5547F7272814679C00E22975 /* H264Decoder.m in Sources */,
+				5547F7292814679D00E22975 /* HLSPlayer.m in Sources */,
 				5590592C1FDD13810003B647 /* window.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
