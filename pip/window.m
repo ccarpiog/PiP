@@ -558,6 +558,10 @@ static NSImage* get_rel_image(NSImage* img){
 }
 
 - (void) loadHLSURL:(NSURL*)url {
+  [self loadHLSURL:url withHeaders:nil];
+}
+
+- (void) loadHLSURL:(NSURL*)url withHeaders:(NSDictionary<NSString *, NSString *> *)headers {
   NSMenuItem* item = [[NSMenuItem alloc] init];
   [item setTarget:self];
   [item setRepresentedObject:[WindowSel getDefault]];
@@ -567,7 +571,7 @@ static NSImage* get_rel_image(NSImage* img){
   is_playing = true;
   is_hidpi = false; // HLS streams typically have fixed resolution
 
-  hlsPlayer = [[HLSPlayer alloc] initWithURL:url];
+  hlsPlayer = [[HLSPlayer alloc] initWithURL:url headers:headers];
   hlsPlayer.delegate = self;
 
   imageView.hidden = NO;
@@ -841,37 +845,74 @@ static NSImage* get_rel_image(NSImage* img){
 }
 
 - (void)hlsPlayerDidUpdateFrame:(CIImage *)image {
-    if(!is_playing || isWinClosing) return;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        CGRect extent = [image extent];
-        if(extent.size.width > 0 && extent.size.height > 0) {
-            NSSize videoSize = NSMakeSize(extent.size.width, extent.size.height);
-            NSSize currentAR = self.aspectRatio;
-            // Update aspect ratio if it hasn't been set or if it changed
-            if(currentAR.width * currentAR.height == 0 ||
-               fabs(currentAR.width / currentAR.height - videoSize.width / videoSize.height) > 0.01) {
-                [self onResize:videoSize andAspectRatio:videoSize];
-            }
-        }
-        [self->imageView setImage:image];
-    });
+  if(!is_playing || isWinClosing) return;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    CGRect extent = [image extent];
+    if(extent.size.width > 0 && extent.size.height > 0) {
+      NSSize videoSize = NSMakeSize(extent.size.width, extent.size.height);
+      NSSize currentAR = self.aspectRatio;
+      // Update aspect ratio if it hasn't been set or if it changed
+      if(currentAR.width * currentAR.height == 0 ||
+        fabs(currentAR.width / currentAR.height - videoSize.width / videoSize.height) > 0.01) {
+        [self onResize:videoSize andAspectRatio:videoSize];
+      }
+    }
+    [self->imageView setImage:image];
+  });
 }
 
 - (void)hlsPlayerDidChangeStatus:(AVPlayerItemStatus)status {
-    if(status == AVPlayerItemStatusReadyToPlay) {
-        [hlsPlayer play];
-        CMTime duration = hlsPlayer.duration;
-        if(CMTIME_IS_VALID(duration) && !CMTIME_IS_INDEFINITE(duration)) {
-            NSSize videoSize = NSMakeSize(1920, 1080); // Default, will be updated from frame
-            [self onResize:videoSize andAspectRatio:videoSize];
-        }
-    } else if(status == AVPlayerItemStatusFailed) {
-        NSLog(@"HLS player failed to load");
+  if(status == AVPlayerItemStatusReadyToPlay) {
+    [hlsPlayer play];
+    CMTime duration = hlsPlayer.duration;
+    if(CMTIME_IS_VALID(duration) && !CMTIME_IS_INDEFINITE(duration)) {
+      NSSize videoSize = NSMakeSize(1920, 1080); // Default, will be updated from frame
+      [self onResize:videoSize andAspectRatio:videoSize];
     }
+  } else if(status == AVPlayerItemStatusFailed) {
+    NSLog(@"HLS player failed to load");
+  }
 }
 
 - (void)hlsPlayerDidChangeTime:(CMTime)time {
-    // Optional: Update UI with current playback time
+  // Optional: Update UI with current playback time
+}
+
+- (void)hlsPlayerDidEncounterError:(NSError *)error {
+  NSLog(@"HLS player error: %@", error);
+  // Show error to user
+  dispatch_async(dispatch_get_main_queue(), ^{
+    NSAlert *errorAlert = [[NSAlert alloc] init];
+    [errorAlert setMessageText:@"HLS Stream Error"];
+    NSString *errorDescription = error.localizedDescription ?: @"Unknown error occurred";
+    [errorAlert setInformativeText:[NSString stringWithFormat:@"Failed to load HLS stream:\n\n%@", errorDescription]];
+    [errorAlert addButtonWithTitle:@"OK"];
+    [errorAlert setAlertStyle:NSAlertStyleWarning];
+    [errorAlert runModal];
+  });
+}
+
+- (void)hlsPlayerDidChangeLoadingStatus:(BOOL)isLoading {
+  if (isLoading) {
+    NSLog(@"HLS player is buffering/loading");
+    // Could show a loading indicator here if needed
+  } else {
+    // NSLog(@"HLS player finished loading");
+    // Could hide loading indicator here if needed
+  }
+}
+
+- (void)hlsPlayerDidChangePlaybackRate:(float)rate {
+  NSLog(@"HLS player playback rate changed: %.2f", rate);
+  // Could update UI to show playback speed if needed
+}
+
+- (void)hlsPlayerDidChangeDuration:(CMTime)duration {
+  if (CMTIME_IS_VALID(duration) && !CMTIME_IS_INDEFINITE(duration)) {
+    double durationSeconds = CMTimeGetSeconds(duration);
+    NSLog(@"HLS player duration: %.2f seconds", durationSeconds);
+    // Could update UI with duration information if needed
+  }
 }
 
 - (void) renderAudio:(uint8_t*) data withLength:(size_t) length{
@@ -1326,7 +1367,7 @@ end:
 
   // Create label
   NSTextField *label = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 85, contentWidth, 17)];
-  [label setStringValue:@"Enter HLS Stream URL (m3u8):"];
+  [label setStringValue:@"Enter HLS Stream URL/cURL (m3u8):"];
   [label setBezeled:NO];
   [label setDrawsBackground:NO];
   [label setEditable:NO];
@@ -1401,23 +1442,61 @@ end:
 - (void)loadHLSURLFromInput:(id)sender {
   if (!hlsInputField) return;
 
-  NSString *urlString = [hlsInputField stringValue];
-  if(urlString.length > 0) {
-    NSURL *url = [NSURL URLWithString:urlString];
-    if(url) {
-      [self dismissHLSInputView];
-      [self loadHLSURL:url];
-    } else {
-      // Show error briefly
-      NSBeep();
-      [hlsInputField setStringValue:@""];
-      [hlsInputField setPlaceholderString:@"Invalid URL - please try again"];
-      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (hlsInputField) {
-          [hlsInputField setPlaceholderString:@""];
-        }
-      });
+  NSString *inputString = [hlsInputField stringValue];
+  if(inputString.length == 0) return;
+
+  NSURL *url = nil;
+  NSMutableDictionary<NSString *, NSString *> *headers = nil;
+
+  // Check if input looks like a curl command
+  if ([inputString hasPrefix:@"curl "] || [inputString containsString:@" -H '"]) {
+    // Parse curl command
+    NSError *error = nil;
+    NSRegularExpression *urlRegex = [NSRegularExpression regularExpressionWithPattern:@"curl\\s+['\"]([^'\"]+)['\"]" options:0 error:&error];
+    NSRegularExpression *headerRegex = [NSRegularExpression regularExpressionWithPattern:@"-H\\s+['\"]([^:]+):\\s*([^'\"]+)['\"]" options:0 error:&error];
+
+    // Extract URL
+    NSTextCheckingResult *urlMatch = [urlRegex firstMatchInString:inputString options:0 range:NSMakeRange(0, inputString.length)];
+    if (urlMatch && urlMatch.numberOfRanges > 1) {
+      NSString *urlString = [inputString substringWithRange:[urlMatch rangeAtIndex:1]];
+      url = [NSURL URLWithString:urlString];
     }
+
+    // Extract headers
+    NSArray<NSTextCheckingResult *> *headerMatches = [headerRegex matchesInString:inputString options:0 range:NSMakeRange(0, inputString.length)];
+    if (headerMatches.count > 0) {
+      headers = [NSMutableDictionary dictionary];
+      for (NSTextCheckingResult *match in headerMatches) {
+        if (match.numberOfRanges >= 3) {
+          NSString *headerName = [inputString substringWithRange:[match rangeAtIndex:1]];
+          NSString *headerValue = [inputString substringWithRange:[match rangeAtIndex:2]];
+          // Trim whitespace
+          headerName = [headerName stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+          headerValue = [headerValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+          if (headerName.length > 0 && headerValue.length > 0) {
+            [headers setObject:headerValue forKey:headerName];
+          }
+        }
+      }
+    }
+  } else {
+    // Try as plain URL
+    url = [NSURL URLWithString:inputString];
+  }
+
+  if(url) {
+    [self dismissHLSInputView];
+    [self loadHLSURL:url withHeaders:headers];
+  } else {
+    // Show error briefly
+    NSBeep();
+    [hlsInputField setStringValue:@""];
+    [hlsInputField setPlaceholderString:@"Invalid URL or curl command - please try again"];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+      if (hlsInputField) {
+        [hlsInputField setPlaceholderString:@""];
+      }
+    });
   }
 }
 

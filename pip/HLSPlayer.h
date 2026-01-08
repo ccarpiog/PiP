@@ -5,6 +5,11 @@
 - (void)hlsPlayerDidUpdateFrame:(CIImage *)image;
 - (void)hlsPlayerDidChangeStatus:(AVPlayerItemStatus)status;
 - (void)hlsPlayerDidChangeTime:(CMTime)time;
+@optional
+- (void)hlsPlayerDidEncounterError:(NSError *)error;
+- (void)hlsPlayerDidChangeLoadingStatus:(BOOL)isLoading;
+- (void)hlsPlayerDidChangePlaybackRate:(float)rate;
+- (void)hlsPlayerDidChangeDuration:(CMTime)duration;
 @end
 
 @interface HLSPlayer : NSObject
@@ -15,6 +20,7 @@
 @property (nonatomic, readonly) CMTime duration;
 
 - (instancetype)initWithURL:(NSURL *)url;
+- (instancetype)initWithURL:(NSURL *)url headers:(NSDictionary<NSString *, NSString *> *)headers;
 - (void)play;
 - (void)pause;
 - (void)stop;
