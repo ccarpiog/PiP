@@ -54,6 +54,18 @@ Based on analysis of the existing receiver implementation, AirPlay 2 uses:
 
 ---
 
+## Code Style
+
+### Indentation and Spacing
+
+- Use **2 spaces** for indentation (not tabs)
+- No trailing whitespace
+- One blank line between method implementations
+- No blank line after opening brace `{`
+- Blank line before closing brace `}` in some cases (method end)
+
+---
+
 ## Implementation Steps
 
 ### Phase 1: DNS-SD Service Discovery
@@ -237,7 +249,7 @@ FairPlay messages that the receiver will accept.
 
 ### Phase 5: Video Encoding and Streaming
 
-#### Step 5.1: Create Video Encoder
+#### Step 5.1: Define Video Encoder Interface
 - [ ] Create `airplay_sender/video_encoder.h`:
   ```c
   typedef struct video_encoder_s video_encoder_t;
@@ -250,21 +262,25 @@ FairPlay messages that the receiver will accept.
       void *ctx
   );
 
+  // Platform-agnostic interface - implementation provided by pip/
   video_encoder_t *video_encoder_init(int width, int height, int fps, int bitrate);
   void video_encoder_set_callback(video_encoder_t *enc, encoded_frame_callback_t cb, void *ctx);
-  int video_encoder_encode_frame(video_encoder_t *enc, CVPixelBufferRef pixelBuffer, uint64_t pts);
+  // Frame data is provided as raw RGBA32 buffer (platform-agnostic)
+  int video_encoder_encode_frame(video_encoder_t *enc, uint8_t *rgba_data, int stride, uint64_t pts);
   void video_encoder_destroy(video_encoder_t *enc);
   ```
-- [ ] Create `airplay_sender/video_encoder.m` (Objective-C for VideoToolbox):
-  - Use `VTCompressionSessionCreate`
+- [ ] **Platform-specific implementation in `pip/`**:
+  - Create `pip/video_encoder.h` and `pip/video_encoder.m` (Objective-C wrapper)
+  - Use VideoToolbox `VTCompressionSessionCreate` for H.264 encoding
   - Configure for real-time encoding:
     - `kVTCompressionPropertyKey_RealTime` = true
     - `kVTCompressionPropertyKey_AllowFrameReordering` = false (no B-frames)
     - `kVTCompressionPropertyKey_ProfileLevel` = Baseline or Main
     - `kVTCompressionPropertyKey_AverageBitRate`
     - `kVTCompressionPropertyKey_MaxKeyFrameInterval`
+  - Convert RGBA32 input to `CVPixelBufferRef` internally
   - Extract SPS/PPS from CMFormatDescription
-  - Handle `VTCompressionOutputCallback`
+  - Handle `VTCompressionOutputCallback` and call C callback
 
 #### Step 5.2: Create Video Packetizer
 - [ ] Create `airplay_sender/video_packetizer.h` and `.c`
@@ -283,71 +299,93 @@ FairPlay messages that the receiver will accept.
 - [ ] Encrypt payload with AES-128-CTR
 - [ ] Send 128-byte header followed by encrypted payload
 
-#### Step 5.3: Integrate with Screen Capture
-- [ ] Create capture loop using existing `CaptureWindow()` or display stream
-- [ ] Convert `CGImageRef` to `CVPixelBufferRef`:
-  ```objc
-  CVPixelBufferRef pixelBuffer = NULL;
-  CVPixelBufferCreate(kCFAllocatorDefault, width, height,
-      kCVPixelFormatType_32BGRA, attrs, &pixelBuffer);
-  CVPixelBufferLockBaseAddress(pixelBuffer, 0);
-  // Copy CGImage data to pixel buffer
-  CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+#### Step 5.3: Define Frame Capture Interface
+- [ ] Create `airplay_sender/frame_capture.h`:
+  ```c
+  typedef struct frame_capture_s frame_capture_t;
+  typedef void (*frame_capture_callback_t)(
+      uint8_t *rgba_data,  // RGBA32 format, row-major
+      int width,
+      int height,
+      int stride,          // Bytes per row
+      uint64_t pts,        // Presentation timestamp
+      void *ctx
+  );
+
+  // Platform-agnostic interface - implementation provided by pip/
+  frame_capture_t *frame_capture_init(void *source_id);  // source_id is platform-specific
+  void frame_capture_set_callback(frame_capture_t *cap, frame_capture_callback_t cb, void *ctx);
+  int frame_capture_start(frame_capture_t *cap, int fps);
+  void frame_capture_stop(frame_capture_t *cap);
+  void frame_capture_destroy(frame_capture_t *cap);
   ```
-- [ ] Alternatively, use `CGDisplayStream` with direct `CVPixelBufferRef` output
-- [ ] Feed frames to encoder at target frame rate (30/60 fps)
-- [ ] Handle resolution changes (recreate encoder)
+- [ ] **Platform-specific implementation in `pip/`**:
+  - Create `pip/frame_capture.h` and `pip/frame_capture.m` (Objective-C wrapper)
+  - Use existing `CaptureWindow()` or `CGDisplayStream` for screen/window capture
+  - Convert `CGImageRef` or `CVPixelBufferRef` to RGBA32 format
+  - Feed frames to callback at target frame rate (30/60 fps)
+  - Handle resolution changes (notify airplay_sender to recreate encoder)
 
 ---
 
 ### Phase 6: Audio Capture and Streaming
 
-#### Step 6.1: Create Audio Capture
+#### Step 6.1: Define Audio Capture Interface
 - [ ] Create `airplay_sender/audio_capture.h`:
   ```c
   typedef struct audio_capture_s audio_capture_t;
   typedef void (*audio_samples_callback_t)(
-      float *samples, int num_frames,
-      int channels, int sample_rate,
-      uint64_t pts, void *ctx
+      float *samples,      // Interleaved PCM samples (channels * num_frames)
+      int num_frames,
+      int channels,
+      int sample_rate,
+      uint64_t pts,
+      void *ctx
   );
 
+  // Platform-agnostic interface - implementation provided by pip/
   audio_capture_t *audio_capture_init(int sample_rate, int channels);
   void audio_capture_set_callback(audio_capture_t *cap, audio_samples_callback_t cb, void *ctx);
   int audio_capture_start(audio_capture_t *cap);
   void audio_capture_stop(audio_capture_t *cap);
   void audio_capture_destroy(audio_capture_t *cap);
   ```
-- [ ] Create `airplay_sender/audio_capture.m`:
+- [ ] **Platform-specific implementation in `pip/`**:
+  - Create `pip/audio_capture.h` and `pip/audio_capture.m` (Objective-C wrapper)
   - Use `AVCaptureSession` with `AVCaptureAudioDataOutput` for app audio
   - Or use `AudioObjectAddPropertyListener` for system audio (requires ScreenCaptureKit or audio loopback)
-  - Handle sample format conversion
+  - Handle sample format conversion to float32 interleaved PCM
+  - Call C callback with converted samples
 
 **Note:** Capturing system audio on macOS requires either:
 1. ScreenCaptureKit (macOS 12.3+) with audio
 2. A virtual audio driver (like BlackHole)
 3. Limiting to app-specific audio
 
-#### Step 6.2: Create Audio Encoder
-- [ ] Create `airplay_sender/audio_encoder.h` and `.c`
-- [ ] Use AudioToolbox `AudioConverterRef`:
+#### Step 6.2: Define Audio Encoder Interface
+- [ ] Create `airplay_sender/audio_encoder.h`:
   ```c
-  AudioStreamBasicDescription inputFormat = {
-      .mSampleRate = 44100,
-      .mFormatID = kAudioFormatLinearPCM,
-      .mChannelsPerFrame = 2,
-      // ...
-  };
-  AudioStreamBasicDescription outputFormat = {
-      .mSampleRate = 44100,
-      .mFormatID = kAudioFormatMPEG4AAC,
-      .mChannelsPerFrame = 2,
-      // ...
-  };
-  AudioConverterNew(&inputFormat, &outputFormat, &converter);
+  typedef struct audio_encoder_s audio_encoder_t;
+  typedef void (*encoded_audio_callback_t)(
+      uint8_t *data,       // Encoded AAC/ALAC data
+      int data_len,
+      uint64_t pts,
+      void *ctx
+  );
+
+  // Platform-agnostic interface - implementation provided by pip/
+  audio_encoder_t *audio_encoder_init(int sample_rate, int channels, int bitrate);
+  void audio_encoder_set_callback(audio_encoder_t *enc, encoded_audio_callback_t cb, void *ctx);
+  int audio_encoder_encode(audio_encoder_t *enc, float *pcm_samples, int num_frames, uint64_t pts);
+  void audio_encoder_destroy(audio_encoder_t *enc);
   ```
-- [ ] Configure AAC encoder (128-256 kbps)
-- [ ] Package frames with proper timestamps
+- [ ] **Platform-specific implementation in `pip/`**:
+  - Create `pip/audio_encoder.h` and `pip/audio_encoder.m` (Objective-C wrapper)
+  - Use AudioToolbox `AudioConverterRef` for AAC encoding
+  - Configure AAC encoder (128-256 kbps)
+  - Convert float32 PCM input to AudioToolbox format internally
+  - Package frames with proper timestamps
+  - Call C callback with encoded data
 
 #### Step 6.3: RTP Audio Streaming
 - [ ] Create UDP socket for audio
@@ -399,8 +437,9 @@ FairPlay messages that the receiver will accept.
   sender_t *sender_init(void);
   void sender_set_state_callback(sender_t *s, sender_state_callback_t cb, void *ctx);
   int sender_connect(sender_t *s, airplay_receiver_t *receiver);
-  int sender_start_mirroring(sender_t *s, CGWindowID window_id);
-  int sender_start_mirroring_display(sender_t *s, CGDirectDisplayID display_id);
+  // source_id is platform-specific opaque pointer (e.g., CGWindowID* or CGDirectDisplayID*)
+  // Platform code in pip/ will handle the actual capture setup
+  int sender_start_mirroring(sender_t *s, void *source_id);
   void sender_set_volume(sender_t *s, float volume);
   void sender_stop(sender_t *s);
   void sender_destroy(sender_t *s);
@@ -460,23 +499,31 @@ FairPlay messages that the receiver will accept.
 For sender, we need to generate valid FairPlay handshake messages. Study `fairplay_playfair.c`
 and `omg_hax.c` for the implementation details.
 
-### Challenge 2: System Audio Capture on macOS
+### Challenge 2: Platform Abstraction
+**Problem:** `airplay_sender` must be a portable C library, but encoding/capture requires platform APIs.
+**Solution:** 
+- Define platform-agnostic C interfaces in `airplay_sender/` (video_encoder.h, audio_capture.h, etc.)
+- Implement platform-specific wrappers in `pip/` (video_encoder.m, audio_capture.m, etc.)
+- Platform code converts between platform types (CVPixelBufferRef, CGImageRef) and portable formats (RGBA32, float32 PCM)
+- This allows `airplay_sender` to be compiled for any platform by providing appropriate implementations
+
+### Challenge 3: System Audio Capture on macOS
 **Problem:** macOS doesn't allow direct system audio capture without user consent.
-**Solutions:**
+**Solutions (implemented in pip/audio_capture.m):**
 1. Use ScreenCaptureKit (macOS 12.3+) which includes audio
 2. For older macOS, require virtual audio driver
 3. Only capture window/app-specific audio when possible
 4. Consider video-only mode as fallback
 
-### Challenge 3: Low Latency Encoding
+### Challenge 4: Low Latency Encoding
 **Problem:** Default VideoToolbox settings prioritize quality over latency.
-**Solution:**
+**Solution (implemented in pip/video_encoder.m):**
 - Set `kVTCompressionPropertyKey_RealTime` = true
 - Disable B-frames (`AllowFrameReordering` = false)
 - Use lower GOP sizes
 - Consider hardware encoding only
 
-### Challenge 4: Time Synchronization
+### Challenge 5: Time Synchronization
 **Problem:** Audio and video must be precisely synchronized.
 **Solution:**
 - Use NTP for wall-clock synchronization
@@ -500,19 +547,27 @@ airplay_sender/
 ├── fairplay_client.c        # FairPlay handshake client
 ├── stream_client.h          # Stream setup API
 ├── stream_client.c          # Stream connection management
-├── video_encoder.h          # Video encoder API
-├── video_encoder.m          # VideoToolbox H.264 encoder
+├── video_encoder.h          # Video encoder API (C interface)
 ├── video_packetizer.h       # Video packet formatting API
 ├── video_packetizer.c       # AirPlay video packet format
-├── audio_capture.h          # Audio capture API
-├── audio_capture.m          # Core Audio / ScreenCaptureKit
-├── audio_encoder.h          # Audio encoder API
-├── audio_encoder.c          # AudioToolbox AAC encoder
+├── frame_capture.h          # Frame capture API (C interface)
+├── audio_capture.h          # Audio capture API (C interface)
+├── audio_encoder.h          # Audio encoder API (C interface)
 ├── ntp_client.h             # NTP client API
 ├── ntp_client.c             # Time synchronization
 ├── sender.h                 # Main sender API
 ├── sender.c                 # Sender state machine
 └── sender_internal.h        # Internal shared definitions
+
+pip/                          # Platform-specific implementations
+├── video_encoder.h          # Video encoder platform wrapper
+├── video_encoder.m          # VideoToolbox H.264 encoder (macOS/iOS)
+├── frame_capture.h          # Frame capture platform wrapper
+├── frame_capture.m          # CoreGraphics capture (macOS/iOS)
+├── audio_capture.h          # Audio capture platform wrapper
+├── audio_capture.m          # Core Audio / ScreenCaptureKit (macOS/iOS)
+├── audio_encoder.h          # Audio encoder platform wrapper
+└── audio_encoder.m          # AudioToolbox AAC encoder (macOS/iOS)
 ```
 
 ---
@@ -529,13 +584,19 @@ airplay_sender/
 - `airplay/byteutils.c/h` - Byte manipulation
 - `airplay/logger.c/h` - Logging
 
-### macOS Frameworks (add to Xcode project)
+### Platform-Specific Dependencies (in pip/, not airplay_sender/)
+**macOS/iOS Frameworks** (add to Xcode project for pip/ only):
 - VideoToolbox.framework (H.264 encoding)
 - AudioToolbox.framework (AAC encoding)
 - CoreMedia.framework (sample buffers, timestamps)
 - CoreVideo.framework (pixel buffers)
 - CoreAudio.framework (audio capture)
 - ScreenCaptureKit.framework (macOS 12.3+, optional)
+- CoreGraphics.framework (screen/window capture)
+
+**Note:** `airplay_sender` is a portable C library with no platform-specific dependencies.
+All platform-specific code (VideoToolbox, AudioToolbox, CoreGraphics, etc.) is implemented
+in `pip/` and provides the C interfaces defined in `airplay_sender/`.
 
 ---
 
