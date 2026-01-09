@@ -31,27 +31,9 @@ if [[ $1 == "-v" ]]; then
   fi
 fi
 
-run_inline(){
-  echo "cmake not found, building inline without airplay"
-  mkdir -p $BUILD_PATH
-  APP=$BUILD_PATH/$1
-  clang $MAKE_ARGS -DNO_AIRPLAY -Wl,-dead_strip pip/*.m -o $APP -fobjc-arc -fobjc-link-runtime -O3 -g0 -Wno-deprecated-declarations -F /System/Library/PrivateFrameworks \
-    -framework Cocoa -framework VideoToolbox -framework AudioToolbox -framework CoreMedia -framework QuartzCore -framework OpenGL -framework Metal -framework MetalKit -framework PIP -framework SkyLight
-  printSize $1;
-  $APP $@
-}
-
 run(){
   cd $BUILD_PATH
   ./$@
-  cd ~-
-}
-
-build(){
-  mkdir -p $BUILD_PATH
-  cd $BUILD_PATH
-  [[ ! -f "Makefile" ]] && cmake $VERBOSE_ARGS $PROJECT_PATH
-  make $MAKE_ARGS -j $NUM_CPU $@
   cd ~-
 }
 
@@ -79,14 +61,55 @@ printSize(){
   cd ~-
 }
 
-compile(){
-  build $@;
-  printSize $@;
+build_inline(){
+  echo "cmake not found, building inline without airplay"
+  mkdir -p $BUILD_PATH
+  APP=$BUILD_PATH/$1
+  clang $MAKE_ARGS -DNO_AIRPLAY -Wl,-dead_strip pip/*.m -o $APP -fobjc-arc -fobjc-link-runtime -O3 -g0 -Wno-deprecated-declarations -F /System/Library/PrivateFrameworks \
+    -framework Cocoa -framework VideoToolbox -framework AudioToolbox -framework CoreMedia -framework QuartzCore -framework OpenGL -framework Metal -framework MetalKit -framework PIP -framework SkyLight
+  printSize $1;
 }
 
-if [[ "$cmake_available" == "0" ]]; then
-  compile pip;
-  run pip $@;
+build(){
+  mkdir -p $BUILD_PATH
+  cd $BUILD_PATH
+  [[ ! -f "Makefile" ]] && cmake $VERBOSE_ARGS $PROJECT_PATH
+  make $MAKE_ARGS -j $NUM_CPU $@
+  printSize $@;
+  cd ~-
+}
+
+debug(){
+  cd $BUILD_PATH
+  lldb $@
+  # | TZ=UTC ts '[%F %.T]'
+  cd ~-
+}
+
+build_app(){
+  if [[ "$cmake_available" == "0" ]]; then
+    build $@;
+  else
+    build_inline $@
+  fi
+}
+
+ACTION="$1"
+
+[[ -z "$ACTION" ]] || shift;
+
+if [[ $ACTION == "b" ]]; then
+  app=$1;shift;
+  build_app $app;
+elif [[ $ACTION == "br" ]]; then
+  app=$1;shift;
+  build_app $app;
+  run $app "$@";
+elif [[ $ACTION == "bd" ]]; then
+  app=$1;shift;
+  build_app $app;
+  debug $app $@;
 else
-  run_inline PiP $@
+  build_app pip
+  run pip $@;
 fi

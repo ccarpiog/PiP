@@ -12,6 +12,10 @@
 #import "audioPlayer.h"
 #import "H264Decoder.h"
 #import "HLSPlayer.h"
+#ifndef NO_AIRPLAY
+#import "airplaySender.h"
+#include "../airplay_sender/http_client.h"
+#endif
 
 #define INCBIN_SILENCE_BITCODE_WARNING
 #include "incbin.h"
@@ -34,6 +38,7 @@ INC_IMG(pop_out);
 INC_IMG(display);
 INC_IMG(windows);
 INC_IMG(hls);
+INC_IMG(airplay);
 
 #define DEFAULT_TITLE @"(right click to begin)"
 
@@ -437,6 +442,11 @@ static NSImage* get_rel_image(NSImage* img){
   int owner_pid;
   int display_id;
   CGDisplayStreamRef display_stream;
+#ifndef NO_AIRPLAY
+  AirPlayDiscovery* airplayDiscovery;
+  void* httpClient;  // http_client_t*
+  AirPlayReceiver* connectedReceiver;
+#endif
 }
 
 - (id) initWithAirplay:(bool)enable andTitle:(NSString*)title{
@@ -456,6 +466,11 @@ static NSImage* get_rel_image(NSImage* img){
   shouldEnableFullScreen = is_playing = is_airplay_session = enable;
   is_hls_session = false;
   is_hidpi = [(NSNumber*)getPref(@"hidpi") intValue] > 0 && !is_airplay_session;
+#ifndef NO_AIRPLAY
+  airplayDiscovery = [AirPlayDiscovery sharedDiscovery];
+  airplayDiscovery.delegate = self;
+  // Discovery is started at app launch, just set delegate
+#endif
 
   self = [super initWithContentRect:kStartRect styleMask:kWindowMask backing:NSBackingStoreBuffered defer:YES];
 
@@ -994,15 +1009,20 @@ static NSImage* get_rel_image(NSImage* img){
   NSMenu* display_menu = [[NSMenu alloc] init];
   NSMenu* window_menu = [[NSMenu alloc] init];
 
+  #ifndef NO_AIRPLAY
+  [airplayDiscovery updateReceivers];
+  NSArray<AirPlayReceiver *> *receivers = [airplayDiscovery receivers];
+  #endif
+
   if(is_airplay_session) goto end;
 
-  if(@available(macOS 11.0, *)){
-    if(!CGPreflightScreenCaptureAccess()){
-      CGRequestScreenCaptureAccess();
-      request_permission("ScreenCapture");
-      return;
-    }
-  }
+  // if(@available(macOS 11.0, *)){
+  //   if(!CGPreflightScreenCaptureAccess()){
+  //     CGRequestScreenCaptureAccess();
+  //     request_permission("ScreenCapture");
+  //     return;
+  //   }
+  // }
 
 //  [theMenu addItem:[NSMenuItem separatorItem]];
 
@@ -1136,6 +1156,31 @@ static NSImage* get_rel_image(NSImage* img){
   }
 
   ADD_MENU_ITEM(theMenu, @"Stream HLS", @selector(loadHLSStream:), GET_REL_IMG(hls))
+#ifndef NO_AIRPLAY
+  if (receivers.count > 0) {
+    NSMenu *airplayMenu = [[NSMenu alloc] init];
+    for (AirPlayReceiver *receiver in receivers) {
+      NSString *title = receiver.name;
+      if (receiver.requiresPassword) {
+        title = [title stringByAppendingString:@" 🔒"];
+      }
+      // Add connection status indicator
+      if (connectedReceiver && [connectedReceiver.deviceId isEqualToString:receiver.deviceId]) {
+        title = [title stringByAppendingString:@" ✓"];
+      }
+      ADD_MENU_ITEM(airplayMenu, title, @selector(connectToAirPlayReceiver:), NULL, {
+        [item setRepresentedObject:receiver];
+        // Set checkmark state for connected receiver
+        if (connectedReceiver && [connectedReceiver.deviceId isEqualToString:receiver.deviceId]) {
+          [item setState:NSControlStateValueOn];
+        }
+      })
+    }
+    ADD_MENU_ITEM(theMenu, @"AirPlay to...", nil, GET_REL_IMG(airplay), {
+      [item setSubmenu:airplayMenu];
+    })
+  }
+#endif
 end:
 
   if(!pvc && ([self is_capturing] || is_airplay_session || is_hls_session)){
@@ -1578,6 +1623,11 @@ end:
   nvc = NULL;
   timer = NULL;
   rootView = NULL;
+#ifndef NO_AIRPLAY
+  if (airplayDiscovery) {
+    airplayDiscovery.delegate = nil;
+  }
+#endif
   butCont = NULL;
   pinbutt = NULL;
   popbutt = NULL;
@@ -1595,5 +1645,134 @@ end:
 
   [super close];
 }
+
+#ifndef NO_AIRPLAY
+- (void)receiverAdded:(AirPlayReceiver *)receiver {
+  NSLog(@"AirPlay receiver discovered: %@ (%@)", receiver.name, receiver.model);
+  // Receivers list will be updated when menu is shown next time
+  // If we're not connected and this is the first receiver, could show a notification
+}
+
+- (void)receiverRemoved:(AirPlayReceiver *)receiver {
+  NSLog(@"AirPlay receiver removed: %@", receiver.name);
+
+  // If the removed receiver is the one we're connected to, disconnect
+  if (connectedReceiver && [connectedReceiver.deviceId isEqualToString:receiver.deviceId]) {
+    if (httpClient) {
+      http_client_disconnect((http_client_t *)httpClient);
+      http_client_destroy((http_client_t *)httpClient);
+      httpClient = NULL;
+    }
+    connectedReceiver = nil;
+    [self setOwner:nil withTitle:DEFAULT_TITLE];
+
+    NSAlert *alert = [[NSAlert alloc] init];
+    [alert setMessageText:@"AirPlay Disconnected"];
+    [alert setInformativeText:[NSString stringWithFormat:@"Connection to %@ was lost.", receiver.name]];
+    [alert addButtonWithTitle:@"OK"];
+    [alert setAlertStyle:NSAlertStyleInformational];
+    [alert runModal];
+  }
+
+  // Receivers list will be updated when menu is shown next time
+}
+
+- (void)connectToAirPlayReceiver:(id)sender {
+  NSMenuItem *item = (NSMenuItem *)sender;
+  AirPlayReceiver *receiver = [item representedObject];
+  if (!receiver) {
+    return;
+  }
+
+  // Disconnect from previous receiver if any
+  if (httpClient) {
+    http_client_disconnect((http_client_t *)httpClient);
+    http_client_destroy((http_client_t *)httpClient);
+    httpClient = NULL;
+  }
+
+  // Create HTTP client
+  const char *host = [receiver.host UTF8String];
+
+  // Try connecting to the advertised port first (some receivers listen on the advertised port)
+  // If that fails, try port-1 (for PiP receiver and similar implementations)
+  uint16_t ports_to_try[] = {receiver.port, receiver.port > 0 ? receiver.port - 1 : receiver.port};
+  http_client_t *client = NULL;
+  uint16_t connect_port = 0;
+  int connect_result = -1;
+
+  for (int i = 0; i < 2; i++) {
+    connect_port = ports_to_try[i];
+    NSLog(@"Attempting to connect to %@ at %s:%u (attempt %d/2)", receiver.name, host, connect_port, i + 1);
+
+    client = http_client_init(host, connect_port);
+    if (!client) {
+      NSLog(@"Failed to initialize HTTP client for %@ on port %u", receiver.name, connect_port);
+      continue;
+    }
+
+    connect_result = http_client_connect(client);
+    if (connect_result == 0) {
+      NSLog(@"Successfully connected to %@ at %s:%u", receiver.name, host, connect_port);
+      break;
+    } else {
+      NSLog(@"Connection failed to %@ on port %u: %d", receiver.name, connect_port, connect_result);
+      http_client_destroy(client);
+      client = NULL;
+    }
+  }
+
+  if (!client || connect_result != 0) {
+    NSAlert *alert = [[NSAlert alloc] init];
+    [alert setMessageText:@"Connection Error"];
+    [alert setInformativeText:[NSString stringWithFormat:@"Failed to connect to %@\n\nPlease check that the receiver is on the same network.", receiver.name]];
+    [alert addButtonWithTitle:@"OK"];
+    [alert setAlertStyle:NSAlertStyleWarning];
+    [alert runModal];
+    return;
+  }
+
+  // Get server info to verify connection
+  server_info_t *info = http_client_get_info(client);
+  if (!info) {
+    http_client_disconnect(client);
+    http_client_destroy(client);
+    NSAlert *alert = [[NSAlert alloc] init];
+    [alert setMessageText:@"Connection Error"];
+    [alert setInformativeText:[NSString stringWithFormat:@"Failed to get information from %@", receiver.name]];
+    [alert addButtonWithTitle:@"OK"];
+    [alert setAlertStyle:NSAlertStyleWarning];
+    [alert runModal];
+    return;
+  }
+
+  // Store connection
+  httpClient = client;
+  connectedReceiver = receiver;
+
+  // Extract info before cleanup
+  uint64_t features = info->features;
+  NSString *version = nil;
+  if (info->sourceVersion) {
+    version = [NSString stringWithUTF8String:info->sourceVersion];
+  }
+
+  // Update window title
+  NSString *title = [NSString stringWithFormat:@"AirPlay: %@", receiver.name];
+  if (version) {
+    title = [title stringByAppendingFormat:@" (v%@)", version];
+  }
+  [self setOwner:@"AirPlay" withTitle:title];
+
+  // Clean up info
+  server_info_destroy(info);
+
+  NSLog(@"Connected to AirPlay receiver: %@ at %@:%u (via RAOP port)", receiver.name, receiver.host, connect_port);
+  NSLog(@"Features: 0x%llx", (unsigned long long)features);
+
+  // TODO: Phase 3 - Start pairing/authentication
+  // TODO: Phase 4 - Set up streaming
+}
+#endif
 
 @end

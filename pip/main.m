@@ -9,6 +9,9 @@
 #import "window.h"
 #import "preferences.h"
 #import <AVFoundation/AVFoundation.h>
+#ifndef NO_AIRPLAY
+#import "airplaySender.h"
+#endif
 
 extern int windowCount;
 
@@ -132,13 +135,18 @@ item.keyEquivalentModifierMask = mask; \
   [self newWindow];
 //  [self showPreferencePanel:self];
   #ifndef NO_AIRPLAY
-  if([(NSNumber*)getPref(@"airplay") intValue] > 0) airplay_receiver_start();
+  if([(NSNumber*)getPref(@"airplay") intValue] > 0){
+    airplay_receiver_start();
+    [NSThread sleepForTimeInterval:1.0];
+    [[AirPlayDiscovery sharedDiscovery] start];
+  }
   #endif
 }
 
 - (void)applicationWillTerminate:(NSNotification *)notification{
   NSLog(@"applicationWillTerminate");
   #ifndef NO_AIRPLAY
+  [[AirPlayDiscovery sharedDiscovery] stop];
   airplay_receiver_stop();
   #endif
 }

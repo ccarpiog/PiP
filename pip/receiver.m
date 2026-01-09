@@ -286,7 +286,8 @@ void airplay_receiver_start(void){
 
   raop_set_dnssd(raop, dnssd);
   dnssd_register_raop(dnssd, port);
-  dnssd_register_airplay(dnssd, port != HIGHEST_PORT ? port + 1 : port - 1);
+  dnssd_register_airplay(dnssd, port);
+  // dnssd_register_airplay(dnssd, port != HIGHEST_PORT ? port + 1 : port - 1);
 }
 
 #endif

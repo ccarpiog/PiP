@@ -71,7 +71,7 @@ Based on analysis of the existing receiver implementation, AirPlay 2 uses:
 ### Phase 1: DNS-SD Service Discovery
 
 #### Step 1.1: Extend DNS-SD Library for Browsing
-- [ ] Add `DNSServiceBrowse` function pointers to `airplay/dnssd.c`:
+- [x] Add `DNSServiceBrowse` function pointers to `airplay/dnssd.c`:
   ```c
   typedef void (*DNSServiceBrowseReply)(
       DNSServiceRef sdRef,
@@ -84,12 +84,13 @@ Based on analysis of the existing receiver implementation, AirPlay 2 uses:
       void *context
   );
   ```
-- [ ] Add `DNSServiceResolve` for getting IP/port of discovered services
-- [ ] Add `DNSServiceGetAddrInfo` for IP address resolution
-- [ ] Add `TXTRecordGetValue*` functions for parsing TXT records
+- [x] Add `DNSServiceResolve` for getting IP/port of discovered services
+- [x] Add `DNSServiceGetAddrInfo` for IP address resolution
+- [x] Add `TXTRecordGetValue*` functions for parsing TXT records
+- [x] Add `dnssd_process_result` for manual event processing
 
 #### Step 1.2: Create Discovery Module
-- [ ] Create `airplay_sender/discovery.h`:
+- [x] Create `airplay_sender/discovery.h`:
   ```c
   typedef struct airplay_receiver_s {
       char name[256];
@@ -108,7 +109,7 @@ Based on analysis of the existing receiver implementation, AirPlay 2 uses:
   void airplay_discovery_stop(void);
   airplay_receiver_t* airplay_discovery_get_receivers(int *count);
   ```
-- [ ] Create `airplay_sender/discovery.c`:
+- [x] Create `airplay_sender/discovery.c`:
   - Browse for `_airplay._tcp` service type
   - Parse TXT records for features:
     - `features` (hex capabilities bitmask)
@@ -119,19 +120,26 @@ Based on analysis of the existing receiver implementation, AirPlay 2 uses:
   - Resolve service to IP address and port
   - Maintain list of available receivers
   - Call callback when receivers appear/disappear
+  - Thread-safe receiver list management with mutexes
+  - Logging support with `airplay_discovery_set_log_callback`
+  - Manual event processing with `airplay_discovery_process_events`
 
 #### Step 1.3: UI Integration for Discovery
-- [ ] Add "AirPlay to..." submenu in window context menu
-- [ ] Populate submenu with discovered receivers
-- [ ] Display receiver icon (based on model type)
-- [ ] Show connection status indicator
+- [x] Add "AirPlay to..." submenu in window context menu
+- [x] Populate submenu with discovered receivers
+- [x] Display receiver icon (lock icon for password-protected receivers)
+- [x] Show connection status indicator (checkmark ✓ and menu state for connected receiver)
+- [x] Objective-C wrapper (`AirPlayDiscovery`, `AirPlayReceiver`) for C library
+- [x] Delegate pattern for receiver add/remove notifications
+- [x] `connectToAirPlayReceiver:` method for initiating connections
+- [x] App lifecycle integration (start/stop in `main.m`)
 
 ---
 
 ### Phase 2: HTTP Client for AirPlay Control
 
 #### Step 2.1: Create HTTP Client Module
-- [ ] Create `airplay_sender/http_client.h`:
+- [x] Create `airplay_sender/http_client.h`:
   ```c
   typedef struct http_client_s http_client_t;
   typedef struct http_client_response_s {
@@ -149,21 +157,22 @@ Based on analysis of the existing receiver implementation, AirPlay 2 uses:
   void http_client_disconnect(http_client_t *client);
   void http_client_destroy(http_client_t *client);
   ```
-- [ ] Create `airplay_sender/http_client.c`:
+- [x] Create `airplay_sender/http_client.c`:
   - TCP socket connection
   - HTTP request formatting
-  - HTTP response parsing
+  - HTTP response parsing (using `llhttp` library)
   - Keep-alive connection handling
   - Timeout handling
+  - Binary plist response parsing support
 
 #### Step 2.2: Implement Server Info Request
-- [ ] Implement `GET /info` request
-- [ ] Parse binary plist response (reuse `plist/` library)
-- [ ] Extract receiver capabilities:
-  - Display resolution (`displays` array)
-  - Audio formats (`audioFormats` array)
+- [x] Implement `GET /info` request
+- [x] Parse binary plist response (reuse `plist/` library)
+- [x] Extract receiver capabilities:
   - Feature flags (`features`)
   - Source version (`sourceVersion`)
+  - Device ID (`deviceID`)
+- [x] Extract additional fields (displays, audioFormats - can be added as needed)
 
 ---
 
@@ -501,7 +510,7 @@ and `omg_hax.c` for the implementation details.
 
 ### Challenge 2: Platform Abstraction
 **Problem:** `airplay_sender` must be a portable C library, but encoding/capture requires platform APIs.
-**Solution:** 
+**Solution:**
 - Define platform-agnostic C interfaces in `airplay_sender/` (video_encoder.h, audio_capture.h, etc.)
 - Implement platform-specific wrappers in `pip/` (video_encoder.m, audio_capture.m, etc.)
 - Platform code converts between platform types (CVPixelBufferRef, CGImageRef) and portable formats (RGBA32, float32 PCM)

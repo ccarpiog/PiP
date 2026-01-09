@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.13)
 
+SET(CMAKE_BUILD_TYPE "Debug")
+# SET(CMAKE_BUILD_TYPE "Release")
+
 project(PiP)
 
 add_compile_options(-fobjc-arc -Wno-deprecated-declarations -Wno-format)

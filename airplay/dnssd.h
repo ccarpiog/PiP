@@ -31,6 +31,30 @@ DNSSD_API const char *dnssd_get_airplay_txt(dnssd_t *dnssd, int *length);
 DNSSD_API const char *dnssd_get_name(dnssd_t *dnssd, int *length);
 DNSSD_API const char *dnssd_get_hw_addr(dnssd_t *dnssd, int *length);
 
+/* Browsing functions for service discovery */
+/* Forward declarations - actual types are in dns_sd.h when available */
+struct sockaddr;
+typedef void (*dnssd_browse_reply_t)(void *sdRef, uint32_t flags, uint32_t interfaceIndex,
+                                     int32_t errorCode, const char *serviceName,
+                                     const char *regtype, const char *replyDomain, void *context);
+typedef void (*dnssd_resolve_reply_t)(void *sdRef, uint32_t flags, uint32_t interfaceIndex,
+                                       int32_t errorCode, const char *fullname,
+                                       const char *hosttarget, uint16_t port,
+                                       uint16_t txtLen, const unsigned char *txtRecord, void *context);
+typedef void (*dnssd_addrinfo_reply_t)(void *sdRef, uint32_t flags, uint32_t interfaceIndex,
+                                        int32_t errorCode, const char *hostname,
+                                        const struct sockaddr *address, uint32_t ttl, void *context);
+
+DNSSD_API void *dnssd_browse_start(dnssd_t *dnssd, const char *regtype, dnssd_browse_reply_t callback, void *context);
+DNSSD_API void dnssd_browse_stop(dnssd_t *dnssd, void *browseRef);
+DNSSD_API void *dnssd_resolve_start(dnssd_t *dnssd, const char *name, const char *regtype, const char *domain, dnssd_resolve_reply_t callback, void *context);
+DNSSD_API void dnssd_resolve_stop(dnssd_t *dnssd, void *resolveRef);
+DNSSD_API void *dnssd_getaddrinfo_start(dnssd_t *dnssd, const char *hostname, dnssd_addrinfo_reply_t callback, void *context);
+DNSSD_API void dnssd_getaddrinfo_stop(dnssd_t *dnssd, void *addrinfoRef);
+DNSSD_API int dnssd_txt_get_value(dnssd_t *dnssd, const unsigned char *txtRecord, uint16_t txtLen, const char *key, uint8_t *valueLen, const void **value);
+
+DNSSD_API int dnssd_process_result(dnssd_t *dnssd, void *serviceRef);
+
 DNSSD_API void dnssd_destroy(dnssd_t *dnssd);
 
 #ifdef __cplusplus
