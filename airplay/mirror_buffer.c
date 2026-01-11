@@ -64,6 +64,23 @@ mirror_buffer_init_aes(mirror_buffer_t *mirror_buffer, const uint64_t *streamCon
     sha512_update(&ctx, mirror_buffer->aeskey_audio, RAOP_AESKEY_LEN);
     sha512_final(&ctx, aesiv_video);
 
+    // Debug: log derived video AES key and IV for comparison with sender
+    logger_log(mirror_buffer->logger, LOGGER_WARNING, "mirror_buffer: derived video AES key (first 16 bytes): %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
+               aeskey_video[0], aeskey_video[1], aeskey_video[2], aeskey_video[3],
+               aeskey_video[4], aeskey_video[5], aeskey_video[6], aeskey_video[7],
+               aeskey_video[8], aeskey_video[9], aeskey_video[10], aeskey_video[11],
+               aeskey_video[12], aeskey_video[13], aeskey_video[14], aeskey_video[15]);
+    logger_log(mirror_buffer->logger, LOGGER_WARNING, "mirror_buffer: derived video AES IV (first 16 bytes): %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
+               aesiv_video[0], aesiv_video[1], aesiv_video[2], aesiv_video[3],
+               aesiv_video[4], aesiv_video[5], aesiv_video[6], aesiv_video[7],
+               aesiv_video[8], aesiv_video[9], aesiv_video[10], aesiv_video[11],
+               aesiv_video[12], aesiv_video[13], aesiv_video[14], aesiv_video[15]);
+    logger_log(mirror_buffer->logger, LOGGER_WARNING, "mirror_buffer: using audio AES key (first 16 bytes): %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
+               mirror_buffer->aeskey_audio[0], mirror_buffer->aeskey_audio[1], mirror_buffer->aeskey_audio[2], mirror_buffer->aeskey_audio[3],
+               mirror_buffer->aeskey_audio[4], mirror_buffer->aeskey_audio[5], mirror_buffer->aeskey_audio[6], mirror_buffer->aeskey_audio[7],
+               mirror_buffer->aeskey_audio[8], mirror_buffer->aeskey_audio[9], mirror_buffer->aeskey_audio[10], mirror_buffer->aeskey_audio[11],
+               mirror_buffer->aeskey_audio[12], mirror_buffer->aeskey_audio[13], mirror_buffer->aeskey_audio[14], mirror_buffer->aeskey_audio[15]);
+
     // Need to be initialized externally
     AES_init_ctx_iv(&mirror_buffer->aes_ctx, aeskey_video, aesiv_video);
 

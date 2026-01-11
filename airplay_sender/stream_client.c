@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <time.h>
 #include <inttypes.h>
+#include <errno.h>
 
 #include "../airplay/plist/plist/plist.h"
 #include "../airplay/compat.h"
@@ -350,6 +351,9 @@ stream_client_connect_video(stream_client_t *client, const char *host)
     return -1;
   }
 
+  fprintf(stderr, "stream_client: video socket connected to %s:%u (fd=%d)\n",
+          host, client->info.data_port, client->video_socket_fd);
+
   // Set TCP keepalive options
   int option = 1;
   setsockopt(client->video_socket_fd, SOL_SOCKET, SO_KEEPALIVE, &option, sizeof(option));
@@ -422,8 +426,9 @@ stream_client_send_video_packet(stream_client_t *client,
   memset(header, 0, sizeof(header));
 
   // Bytes 0-3: Payload size (big-endian)
-  uint32_t payload_size_be = htonl((uint32_t)data_len);
-  memcpy(header, &payload_size_be, 4);
+  // Receiver expects little-endian payload size (byteutils_get_int reads little-endian)
+  uint32_t payload_size_le = (uint32_t)data_len;
+  memcpy(header, &payload_size_le, 4);
 
   // Byte 4: Packet type
   header[4] = packet_type;
@@ -501,12 +506,16 @@ stream_client_send_raw_video_packet(stream_client_t *client,
 {
   int sent;
   int ret;
+  static int send_count = 0;
 
   assert(client);
   assert(packet);
   assert(packet_len > 0);
 
   if (client->video_socket_fd == -1) {
+    if (send_count == 0 || send_count % 30 == 0) {
+      fprintf(stderr, "stream_client: video socket not connected (fd=-1)\n");
+    }
     return -1;
   }
 
@@ -515,12 +524,18 @@ stream_client_send_raw_video_packet(stream_client_t *client,
   while (sent < packet_len) {
     ret = send(client->video_socket_fd, packet + sent, packet_len - sent, 0);
     if (ret == -1) {
-      fprintf(stderr, "stream_client: failed to send raw video packet\n");
+      fprintf(stderr, "stream_client: failed to send raw video packet: %s\n", strerror(errno));
       return -1;
     }
     sent += ret;
   }
 
+  if (send_count == 0 || send_count % 30 == 0) {
+    fprintf(stderr, "stream_client: sent raw video packet %d, len=%d, bytes_sent=%d\n",
+            send_count, packet_len, sent);
+  }
+
+  send_count++;
   return 0;
 }
 

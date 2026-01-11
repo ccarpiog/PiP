@@ -119,9 +119,23 @@ static void audio_process (void *cls, raop_ntp_t *ntp, aac_decode_struct *data, 
 }
 
 static void video_process(void *cls, raop_ntp_t *ntp, h264_decode_struct *data, raop_connection_t* conn){
-  if(!conn->usr_data) return;
+  static int video_process_count = 0;
+  video_process_count++;
+
+  if(!conn->usr_data) {
+    if (video_process_count == 1 || video_process_count % 30 == 0) {
+      NSLog(@"video_process: conn->usr_data is NULL, skipping");
+    }
+    return;
+  }
   Window* window = (__bridge Window *)(conn->usr_data);
   int idx = 0, lastIdx = -1, zeroes = 0;
+  int nal_count = 0;
+
+  if (video_process_count == 1 || video_process_count % 30 == 0) {
+    NSLog(@"video_process: received data, len=%d, nal_count=%d, pts=%llu",
+          data->data_len, data->nal_count, data->pts);
+  }
 
   while(idx < data->data_len){
     uint8_t val = data->data[idx++];
@@ -135,12 +149,34 @@ static void video_process(void *cls, raop_ntp_t *ntp, h264_decode_struct *data, 
     if(val == 0) continue;
 
     if(val == 1 && data->data_len){
-      if(lastIdx >= 0) [window renderH264:data->data + lastIdx withLength:(int)(idx - zeroes - 1 - lastIdx)];
+      if(lastIdx >= 0) {
+        int nal_len = (int)(idx - zeroes - 1 - lastIdx);
+        int nal_type = (data->data[lastIdx + 4]) & 0x1F;
+        if (video_process_count == 1 || video_process_count % 30 == 0 || nal_type == 5) {
+          NSLog(@"video_process: found NAL unit, type=%d (IDR=%d), len=%d, offset=%d",
+                nal_type, (nal_type == 5), nal_len, lastIdx);
+        }
+        [window renderH264:data->data + lastIdx withLength:nal_len];
+        nal_count++;
+      }
       lastIdx = idx - zeroes -1;
     }
     zeroes = 0;
   }
-  if(lastIdx >= 0) [window renderH264:data->data + lastIdx withLength:(int)(idx - zeroes - lastIdx)];
+  if(lastIdx >= 0) {
+    int nal_len = (int)(idx - zeroes - lastIdx);
+    int nal_type = (data->data[lastIdx + 4]) & 0x1F;
+    if (video_process_count == 1 || video_process_count % 30 == 0 || nal_type == 5) {
+      NSLog(@"video_process: found final NAL unit, type=%d (IDR=%d), len=%d, offset=%d",
+            nal_type, (nal_type == 5), nal_len, lastIdx);
+    }
+    [window renderH264:data->data + lastIdx withLength:nal_len];
+    nal_count++;
+  }
+
+  if (video_process_count == 1 || video_process_count % 30 == 0) {
+    NSLog(@"video_process: processed %d NAL units from %d expected", nal_count, data->nal_count);
+  }
 }
 
 static void audio_flush (void *cls, raop_connection_t* conn){

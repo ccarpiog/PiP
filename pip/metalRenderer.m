@@ -136,5 +136,8 @@
   return self->cropRect;
 }
 
+- (CIImage *)currentImage {
+  return self.image;
+}
 
 @end

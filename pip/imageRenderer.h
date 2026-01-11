@@ -24,6 +24,7 @@
 - (void)setScale:(float) scale;
 - (void)setCropRect:(NSRect) rect;
 - (void)renderImage:(CIImage *)image;
+- (CIImage *)currentImage;
 @end
 
 @interface MetalRenderer : NSObject <ImageRenderer>

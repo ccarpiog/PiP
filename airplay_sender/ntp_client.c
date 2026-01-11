@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <time.h>
 #include <sys/time.h>
+#include <errno.h>
 
 #include "../airplay/compat.h"
 #include "../airplay/sockets.h"
@@ -189,6 +190,15 @@ ntp_client_sync(ntp_client_t *ntp)
   // Receive response
   response_len = recvfrom(ntp->socket_fd, response, sizeof(response), 0,
                           (struct sockaddr *)&ntp->remote_addr, &ntp->remote_addr_len);
+
+  if (response_len < 0) {
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      fprintf(stderr, "ntp_client: NTP response timeout (receiver may not be responding to client requests)\n");
+    } else {
+      fprintf(stderr, "ntp_client: recvfrom failed: %s (errno=%d)\n", strerror(errno), errno);
+    }
+    return -1;
+  }
 
   if (response_len < 32) {
     fprintf(stderr, "ntp_client: invalid NTP response (len=%d)\n", response_len);

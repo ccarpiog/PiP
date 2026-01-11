@@ -61,9 +61,13 @@ struct sender_s {
   unsigned char fairplay_session_key[16];
   int fairplay_initialized;
 
+  // ECDH shared secret (32 bytes) for audio AES key hashing
+  unsigned char ecdh_secret[32];
+
   // Streaming state
   int streaming;
   void *source_id;
+  uint64_t video_stream_start_time;  // Local time (microseconds) when video streaming started
 
   // Video AES key and IV (derived from stream connection ID)
   unsigned char video_aes_key[16];
@@ -181,6 +185,7 @@ sender_init(void)
   s->fairplay_initialized = 0;
   s->streaming = 0;
   s->source_id = NULL;
+  s->video_stream_start_time = 0;
   s->video_encryption_initialized = 0;
 
   return s;
@@ -194,17 +199,45 @@ on_encoded_frame(uint8_t *data, int len, bool is_keyframe,
 {
   sender_t *s = (sender_t *)ctx;
   uint64_t ntp_timestamp;
+  uint64_t absolute_local_time;
+  static int encoded_count = 0;
 
   if (!s || !s->video_packetizer || !s->ntp_client) {
+    if (encoded_count == 0 || encoded_count % 30 == 0) {
+      fprintf(stderr, "sender: on_encoded_frame - sender=%p, packetizer=%p, ntp=%p\n",
+              (void *)s, (void *)(s ? s->video_packetizer : NULL), (void *)(s ? s->ntp_client : NULL));
+    }
     return;
   }
 
-  // Convert local timestamp to NTP timestamp
-  ntp_timestamp = ntp_client_convert_to_ntp(s->ntp_client, pts);
+  // PTS is relative to stream start (first frame has PTS=0)
+  // Track stream start time on first frame
+  if (pts == 0 && s->video_stream_start_time == 0) {
+    s->video_stream_start_time = ntp_client_get_local_time(s->ntp_client);
+    if (encoded_count == 0) {
+      fprintf(stderr, "sender: video stream started at local_time=%" PRIu64 "\n", s->video_stream_start_time);
+    }
+  }
+
+  // Convert relative PTS to absolute local time
+  absolute_local_time = s->video_stream_start_time + pts;
+
+  // Convert absolute local timestamp to NTP timestamp
+  ntp_timestamp = ntp_client_convert_to_ntp(s->ntp_client, absolute_local_time);
+
+  if (encoded_count == 0 || encoded_count % 30 == 0) {
+    fprintf(stderr, "sender: on_encoded_frame - frame %d, len=%d, keyframe=%d, pts=%" PRIu64 ", ntp=%" PRIu64 "\n",
+            encoded_count, len, is_keyframe, pts, ntp_timestamp);
+  }
 
   // Packetize and send
-  video_packetizer_packetize(s->video_packetizer, data, len, is_keyframe,
-                             sps, sps_len, pps, pps_len, ntp_timestamp);
+  int result = video_packetizer_packetize(s->video_packetizer, data, len, is_keyframe,
+                                          sps, sps_len, pps, pps_len, ntp_timestamp);
+  if (result != 0 && (encoded_count == 0 || encoded_count % 30 == 0)) {
+    fprintf(stderr, "sender: video_packetizer_packetize failed: %d\n", result);
+  }
+
+  encoded_count++;
 }
 
 // Callback: Packetized video data -> stream client
@@ -212,13 +245,27 @@ static void
 on_packetized_video(const uint8_t *packet, int packet_len, void *ctx)
 {
   sender_t *s = (sender_t *)ctx;
+  static int packet_count = 0;
 
   if (!s || !s->stream_client || packet_len < 128) {
+    if (packet_count == 0 || packet_count % 30 == 0) {
+      fprintf(stderr, "sender: on_packetized_video - sender=%p, stream_client=%p, len=%d\n",
+              (void *)s, (void *)(s ? s->stream_client : NULL), packet_len);
+    }
     return;
   }
 
+  if (packet_count == 0 || packet_count % 30 == 0) {
+    fprintf(stderr, "sender: on_packetized_video - packet %d, len=%d\n", packet_count, packet_len);
+  }
+
   // Send raw packet (header + encrypted payload) directly via stream client
-  stream_client_send_raw_video_packet(s->stream_client, packet, packet_len);
+  int result = stream_client_send_raw_video_packet(s->stream_client, packet, packet_len);
+  if (result != 0 && (packet_count == 0 || packet_count % 30 == 0)) {
+    fprintf(stderr, "sender: stream_client_send_raw_video_packet failed: %d\n", result);
+  }
+
+  packet_count++;
 }
 
 // Callback: Captured frame -> video encoder
@@ -227,12 +274,27 @@ on_captured_frame(uint8_t *rgba_data, int width, int height, int stride,
                  uint64_t pts, void *ctx)
 {
   sender_t *s = (sender_t *)ctx;
+  static int frame_count = 0;
 
   if (!s || !s->video_encoder) {
+    if (frame_count == 0 || frame_count % 30 == 0) {
+      fprintf(stderr, "sender: on_captured_frame - sender=%p, encoder=%p\n",
+              (void *)s, (void *)(s ? s->video_encoder : NULL));
+    }
     return;
   }
 
-  video_encoder_encode_frame(s->video_encoder, rgba_data, stride, pts);
+  if (frame_count == 0 || frame_count % 30 == 0) {
+    fprintf(stderr, "sender: on_captured_frame - frame %d, %dx%d, stride=%d, pts=%" PRIu64 "\n",
+            frame_count, width, height, stride, pts);
+  }
+
+  int result = video_encoder_encode_frame(s->video_encoder, rgba_data, stride, pts);
+  if (result != 0 && (frame_count == 0 || frame_count % 30 == 0)) {
+    fprintf(stderr, "sender: video_encoder_encode_frame failed: %d\n", result);
+  }
+
+  frame_count++;
 }
 
 // Callback: Encoded audio -> RTP
@@ -339,12 +401,14 @@ sender_connect(sender_t *s, airplay_receiver_t *receiver,
     return -1;
   }
 
-  // Get shared secret for FairPlay
+  // Get shared secret for FairPlay and store for later use
   if (pairing_client_get_shared_secret(s->pairing_client, shared_secret) != 0) {
     sender_set_state(s, SENDER_STATE_ERROR, "Failed to get shared secret");
     cleanup_components(s);
     return -1;
   }
+  // Store ECDH secret for audio AES key hashing (receiver does this too)
+  memcpy(s->ecdh_secret, shared_secret, 32);
 
   // Step 3: FairPlay Setup
   s->fairplay_client = fairplay_client_init();
@@ -373,11 +437,20 @@ sender_connect(sender_t *s, airplay_receiver_t *receiver,
     return -1;
   }
 
-  // For now, use FairPlay session key as audio AES key
-  // In a full implementation, this would be derived from the FairPlay handshake
+  // Use FairPlay session key as base audio AES key
+  // Receiver hashes it with ECDH secret before using for video key derivation
   memcpy(audio_aes_key, fairplay_session_key, 16);
   s->fairplay_initialized = 1;
-  memcpy(s->fairplay_session_key, fairplay_session_key, 16);
+
+  // Hash audio AES key with ECDH secret (same as receiver does in raop_handlers.h)
+  // This is the actual audio AES key used for video key derivation
+  unsigned char hashed_audio_key[64];
+  sha512_context ctx;
+  sha512_init(&ctx);
+  sha512_update(&ctx, audio_aes_key, 16);
+  sha512_update(&ctx, s->ecdh_secret, 32);
+  sha512_final(&ctx, hashed_audio_key);
+  memcpy(s->fairplay_session_key, hashed_audio_key, 16);  // Use hashed key for video derivation
 
   // Step 4: Stream Setup
   s->stream_client = stream_client_init();
@@ -388,11 +461,21 @@ sender_connect(sender_t *s, airplay_receiver_t *receiver,
   }
 
   // Step 4: Stream Setup
-  // Our receiver doesn't support POST /stream, so we skip it and use RTSP SETUP directly
-  // Generate a stream connection ID (receiver will use this for AES key derivation)
-  // The stream_client_setup_rtsp function will use client->info.stream_connection_id
-  // We need to set it first - use a helper function or set it directly
-  // For now, we'll let stream_client_setup_rtsp generate it if it's 0
+  // First send POST /stream to initialize video AES keys on receiver
+  // The receiver needs this to initialize mirror_buffer AES with streamConnectionID
+  if (stream_client_setup(s->stream_client, s->http_client,
+                          device_id, os_name, os_version, model) != 0) {
+    fprintf(stderr, "sender: POST /stream failed (non-fatal, will try RTSP SETUP)\n");
+    // Non-fatal, continue with RTSP SETUP
+  } else {
+    fprintf(stderr, "sender: POST /stream succeeded\n");
+    // Get stream info from POST /stream response
+    if (stream_client_get_info(s->stream_client, &stream_info) == 0) {
+      s->stream_info = stream_info;
+      fprintf(stderr, "sender: got stream info from POST /stream: dataPort=%d, streamConnectionID=%llu\n",
+              stream_info.data_port, (unsigned long long)stream_info.stream_connection_id);
+    }
+  }
 
   // Step 4a: GET /info RTSP/1.0 (iPad does this before SETUP)
   if (stream_client_get_info_rtsp(s->stream_client, s->http_client) != 0) {
@@ -473,9 +556,17 @@ sender_connect(sender_t *s, airplay_receiver_t *receiver,
       fprintf(stderr, "sender: warning - failed to connect NTP client\n");
       // Non-fatal, continue without NTP sync
     } else {
+      fprintf(stderr, "sender: NTP client connected, performing sync\n");
       // Perform initial NTP sync
-      ntp_client_sync(s->ntp_client);
+      if (ntp_client_sync(s->ntp_client) == 0) {
+        int64_t offset = ntp_client_get_offset(s->ntp_client);
+        fprintf(stderr, "sender: NTP sync successful, offset=%lld microseconds\n", (long long)offset);
+      } else {
+        fprintf(stderr, "sender: NTP sync failed\n");
+      }
     }
+  } else {
+    fprintf(stderr, "sender: warning - no timing port available for NTP\n");
   }
 
   sender_set_state(s, SENDER_STATE_IDLE, NULL);
@@ -516,6 +607,17 @@ sender_start_mirroring(sender_t *s, void *source_id)
     return -1;
   }
 
+  // Perform another NTP sync right before starting video to ensure accurate timestamps
+  // Reset video stream start time
+  s->video_stream_start_time = 0;
+
+  if (s->ntp_client && stream_info.timing_port != 0) {
+    fprintf(stderr, "sender: performing NTP sync before video start\n");
+    ntp_client_sync(s->ntp_client);
+    int64_t offset = ntp_client_get_offset(s->ntp_client);
+    fprintf(stderr, "sender: NTP offset before video: %lld microseconds\n", (long long)offset);
+  }
+
   // Initialize video encryption in stream_client
   // Audio AES key is derived from FairPlay session key
   // For now, use the FairPlay session key directly
@@ -531,6 +633,14 @@ sender_start_mirroring(sender_t *s, void *source_id)
   char iv_str[64];
   unsigned char aeskey_video[64];
   unsigned char aesiv_video[64];
+
+  fprintf(stderr, "sender: deriving video AES key/IV with streamConnectionID=%llu\n",
+          (unsigned long long)stream_info.stream_connection_id);
+  fprintf(stderr, "sender: using fairplay_session_key (first 16 bytes): ");
+  for (int i = 0; i < 16; i++) {
+    fprintf(stderr, "%02x ", s->fairplay_session_key[i]);
+  }
+  fprintf(stderr, "\n");
 
   snprintf(key_str, sizeof(key_str), "AirPlayStreamKey%" PRIu64,
            stream_info.stream_connection_id);
@@ -551,6 +661,17 @@ sender_start_mirroring(sender_t *s, void *source_id)
   memcpy(s->video_aes_key, aeskey_video, 16);
   memcpy(s->video_aes_iv, aesiv_video, 16);
   s->video_encryption_initialized = 1;
+
+  fprintf(stderr, "sender: derived video AES key (first 16 bytes): ");
+  for (int i = 0; i < 16; i++) {
+    fprintf(stderr, "%02x ", s->video_aes_key[i]);
+  }
+  fprintf(stderr, "\n");
+  fprintf(stderr, "sender: derived video AES IV (first 16 bytes): ");
+  for (int i = 0; i < 16; i++) {
+    fprintf(stderr, "%02x ", s->video_aes_iv[i]);
+  }
+  fprintf(stderr, "\n");
 
   // Initialize video packetizer
   s->video_packetizer = video_packetizer_init();

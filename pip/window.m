@@ -17,6 +17,10 @@
 #include "../airplay_sender/http_client.h"
 #include "../airplay_sender/sender.h"
 #include "../airplay_sender/discovery.h"
+#include "../airplay_sender/frame_capture.h"
+#include "../airplay_sender/video_encoder.h"
+#import "frame_capture.h"
+#import "video_encoder.h"
 #include <sys/sysctl.h>
 #endif
 
@@ -452,6 +456,7 @@ static NSImage* get_rel_image(NSImage* img){
   void* airplaySender;  // sender_t*
   AirPlayReceiver* connectedSenderReceiver;
   bool is_airplay_sending;
+  dispatch_queue_t senderQueue;  // Serial queue for sender operations
 #endif
 }
 
@@ -1168,10 +1173,11 @@ static NSImage* get_rel_image(NSImage* img){
 
   ADD_MENU_ITEM(theMenu, @"Stream HLS", @selector(loadHLSStream:), GET_REL_IMG(hls))
 #ifndef NO_AIRPLAY
-  if (receivers.count > 0 && airplay_sender_enabled) {
-    // AirPlay Sender menu (for mirroring/sending content)
-    // Only show if sender is enabled in preferences
-    if (airplay_sender_enabled) {
+  if (airplay_sender_enabled && [self is_capturing]) {
+    // Show start/stop options based on senderQueue state
+    if (!senderQueue) {
+      // Not mirroring - show "AirPlay Mirror to..." menu
+      // AirPlay Sender menu (for mirroring/sending content)
       NSMenu *airplaySendMenu = [[NSMenu alloc] init];
       for (AirPlayReceiver *receiver in receivers) {
         if (!receiver.supportsScreenMirroring) {
@@ -1198,10 +1204,8 @@ static NSImage* get_rel_image(NSImage* img){
           [item setSubmenu:airplaySendMenu];
         })
       }
-    }
-
-    // Stop AirPlay Mirroring
-    if (is_airplay_sending && airplaySender) {
+    } else {
+      // Mirroring active - show "Stop AirPlay Mirroring" option
       ADD_MENU_ITEM(theMenu, @"Stop AirPlay Mirroring", @selector(stopAirPlayMirroring:), GET_REL_IMG(stop))
     }
   }
@@ -1284,6 +1288,8 @@ end:
 
   [self stopTimer];
   [self stopDisplayStream];
+  [self stopAirPlayMirroring:sender];
+
   if(hlsPlayer) {
     [hlsPlayer stop];
     hlsPlayer = nil;
@@ -1696,6 +1702,7 @@ end:
 }
 
 - (void)receiverRemoved:(AirPlayReceiver *)receiver {
+  return;
   NSLog(@"AirPlay receiver removed: %@", receiver.name);
 
   // If the removed receiver is the one we're connected to, disconnect
@@ -1945,7 +1952,9 @@ static void sender_state_callback(sender_state_t state, const char *error, void 
 
   // Run sender connection on background thread to avoid blocking main UI thread
   // This prevents deadlock when receiver's conn_init tries to use main queue
-  dispatch_queue_t senderQueue = dispatch_queue_create("com.pip.airplay.sender", DISPATCH_QUEUE_SERIAL);
+  // Create or reuse the sender queue
+  senderQueue = dispatch_queue_create("com.pip.airplay.sender", DISPATCH_QUEUE_SERIAL);
+
   dispatch_async(senderQueue, ^{
     // Get hostname for device name
     NSString *deviceName = [[NSHost currentHost] name];
@@ -1998,7 +2007,7 @@ static void sender_state_callback(sender_state_t state, const char *error, void 
       return;
     }
 
-    // Update UI on main thread
+    // Update UI on main thread and set up frame capture
     dispatch_async(dispatch_get_main_queue(), ^{
       // Store sender and receiver
       airplaySender = sender_obj;
@@ -2007,14 +2016,63 @@ static void sender_state_callback(sender_state_t state, const char *error, void 
 
       // Update window title
       [self setOwner:@"AirPlay Mirror" withTitle:[NSString stringWithFormat:@"Mirroring to %@", receiverToConnect.name]];
+
+      // Initialize frame capture and video encoder from ImageView
+      if (self->imageView && self->imageView.renderer) {
+        // Get image dimensions from current image or use default
+        CIImage *currentImage = [self->imageView.renderer currentImage];
+        int width = 1920;  // Default width
+        int height = 1080; // Default height
+        int fps = 30;  // Reduced from 30 to 5 to test buffer lifetime issue
+
+        if (currentImage) {
+          CGRect extent = [currentImage extent];
+          width = (int)extent.size.width;
+          height = (int)extent.size.height;
+        } else {
+          // Use window/view size as fallback
+          NSSize viewSize = self->imageView.bounds.size;
+          if (viewSize.width > 0 && viewSize.height > 0) {
+            width = (int)viewSize.width;
+            height = (int)viewSize.height;
+          }
+        }
+
+        // Get quality preference for bitrate
+        int quality = [(NSNumber*)getPref(@"airplay_sender_quality") intValue];
+        int bitrate = quality == 0 ? 2000000 : (quality == 1 ? 5000000 : 10000000); // Low/Medium/High
+
+        NSLog(@"AirPlay: Setting up video pipeline - width=%d, height=%d, fps=%d, bitrate=%d", width, height, fps, bitrate);
+
+        // Initialize video encoder
+        video_encoder_t *encoder = video_encoder_init(width, height, fps, bitrate);
+        if (encoder) {
+          NSLog(@"AirPlay: Video encoder created, setting on sender");
+          sender_set_video_encoder(sender_obj, encoder);
+
+          // Initialize frame capture
+          frame_capture_t *frame_cap = frame_capture_init((__bridge void *)self->imageView);
+          if (frame_cap) {
+            NSLog(@"AirPlay: Frame capture created, setting on sender");
+            sender_set_frame_capture(sender_obj, frame_cap);
+            // Start frame capture at target fps
+            int start_result = frame_capture_start(frame_cap, fps);
+            if (start_result == 0) {
+              NSLog(@"AirPlay: Frame capture started successfully");
+            } else {
+              NSLog(@"AirPlay: Failed to start frame capture: %d", start_result);
+            }
+          } else {
+            NSLog(@"AirPlay: Failed to create frame capture, cleaning up encoder");
+            // If frame capture fails, clean up encoder
+            video_encoder_destroy(encoder);
+          }
+        } else {
+          NSLog(@"AirPlay: Failed to create video encoder");
+        }
+      }
     });
   });
-
-  // TODO: When platform code creates video encoder, use quality preference:
-  // int quality = [(NSNumber*)getPref(@"airplay_sender_quality") intValue];
-  // int bitrate = quality == 0 ? 2000000 : (quality == 1 ? 5000000 : 10000000); // Low/Medium/High
-  // video_encoder_t *encoder = video_encoder_init(width, height, fps, bitrate);
-  // sender_set_video_encoder(sender_obj, encoder);
 
   // TODO: When platform code creates audio encoder/capture, check audio preference:
   // bool audio_enabled = [(NSNumber*)getPref(@"airplay_sender_audio") intValue] > 0;
@@ -2028,18 +2086,20 @@ static void sender_state_callback(sender_state_t state, const char *error, void 
 }
 
 - (void)stopAirPlayMirroring:(id)sender {
-  if (!airplaySender) {
+  if (!senderQueue || !airplaySender) {
     return;
   }
 
-  sender_stop((sender_t *)airplaySender);
-  sender_destroy((sender_t *)airplaySender);
+  dispatch_sync(senderQueue, ^{
+    sender_stop(airplaySender);
+    sender_destroy(airplaySender);
+  });
+
   airplaySender = NULL;
   connectedSenderReceiver = nil;
   is_airplay_sending = false;
-
+  senderQueue = NULL;  // Clear queue so menu shows start option
   [self setOwner:nil withTitle:DEFAULT_TITLE];
-
   NSLog(@"Stopped AirPlay mirroring");
 }
 #endif
