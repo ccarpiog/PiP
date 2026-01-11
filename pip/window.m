@@ -15,6 +15,9 @@
 #ifndef NO_AIRPLAY
 #import "airplaySender.h"
 #include "../airplay_sender/http_client.h"
+#include "../airplay_sender/sender.h"
+#include "../airplay_sender/discovery.h"
+#include <sys/sysctl.h>
 #endif
 
 #define INCBIN_SILENCE_BITCODE_WARNING
@@ -446,6 +449,9 @@ static NSImage* get_rel_image(NSImage* img){
   AirPlayDiscovery* airplayDiscovery;
   void* httpClient;  // http_client_t*
   AirPlayReceiver* connectedReceiver;
+  void* airplaySender;  // sender_t*
+  AirPlayReceiver* connectedSenderReceiver;
+  bool is_airplay_sending;
 #endif
 }
 
@@ -470,6 +476,9 @@ static NSImage* get_rel_image(NSImage* img){
   airplayDiscovery = [AirPlayDiscovery sharedDiscovery];
   airplayDiscovery.delegate = self;
   // Discovery is started at app launch, just set delegate
+  airplaySender = NULL;
+  connectedSenderReceiver = nil;
+  is_airplay_sending = false;
 #endif
 
   self = [super initWithContentRect:kStartRect styleMask:kWindowMask backing:NSBackingStoreBuffered defer:YES];
@@ -1010,6 +1019,8 @@ static NSImage* get_rel_image(NSImage* img){
   NSMenu* window_menu = [[NSMenu alloc] init];
 
   #ifndef NO_AIRPLAY
+  // Only show AirPlay sender options if sender is enabled
+  bool airplay_sender_enabled = [(NSNumber*)getPref(@"airplay_sender") intValue] > 0;
   [airplayDiscovery updateReceivers];
   NSArray<AirPlayReceiver *> *receivers = [airplayDiscovery receivers];
   #endif
@@ -1157,28 +1168,42 @@ static NSImage* get_rel_image(NSImage* img){
 
   ADD_MENU_ITEM(theMenu, @"Stream HLS", @selector(loadHLSStream:), GET_REL_IMG(hls))
 #ifndef NO_AIRPLAY
-  if (receivers.count > 0) {
-    NSMenu *airplayMenu = [[NSMenu alloc] init];
-    for (AirPlayReceiver *receiver in receivers) {
-      NSString *title = receiver.name;
-      if (receiver.requiresPassword) {
-        title = [title stringByAppendingString:@" 🔒"];
-      }
-      // Add connection status indicator
-      if (connectedReceiver && [connectedReceiver.deviceId isEqualToString:receiver.deviceId]) {
-        title = [title stringByAppendingString:@" ✓"];
-      }
-      ADD_MENU_ITEM(airplayMenu, title, @selector(connectToAirPlayReceiver:), NULL, {
-        [item setRepresentedObject:receiver];
-        // Set checkmark state for connected receiver
-        if (connectedReceiver && [connectedReceiver.deviceId isEqualToString:receiver.deviceId]) {
-          [item setState:NSControlStateValueOn];
+  if (receivers.count > 0 && airplay_sender_enabled) {
+    // AirPlay Sender menu (for mirroring/sending content)
+    // Only show if sender is enabled in preferences
+    if (airplay_sender_enabled) {
+      NSMenu *airplaySendMenu = [[NSMenu alloc] init];
+      for (AirPlayReceiver *receiver in receivers) {
+        if (!receiver.supportsScreenMirroring) {
+          continue;  // Skip receivers that don't support mirroring
         }
-      })
+        NSString *title = receiver.name;
+        if (receiver.requiresPassword) {
+          title = [title stringByAppendingString:@" 🔒"];
+        }
+        // Add connection status indicator
+        if (connectedSenderReceiver && [connectedSenderReceiver.deviceId isEqualToString:receiver.deviceId]) {
+          title = [title stringByAppendingString:@" ✓"];
+        }
+        ADD_MENU_ITEM(airplaySendMenu, title, @selector(connectToAirPlaySender:), NULL, {
+          [item setRepresentedObject:receiver];
+          // Set checkmark state for connected sender receiver
+          if (connectedSenderReceiver && [connectedSenderReceiver.deviceId isEqualToString:receiver.deviceId]) {
+            [item setState:NSControlStateValueOn];
+          }
+        })
+      }
+      if (airplaySendMenu.numberOfItems > 0) {
+        ADD_MENU_ITEM(theMenu, @"AirPlay Mirror to...", nil, GET_REL_IMG(airplay), {
+          [item setSubmenu:airplaySendMenu];
+        })
+      }
     }
-    ADD_MENU_ITEM(theMenu, @"AirPlay to...", nil, GET_REL_IMG(airplay), {
-      [item setSubmenu:airplayMenu];
-    })
+
+    // Stop AirPlay Mirroring
+    if (is_airplay_sending && airplaySender) {
+      ADD_MENU_ITEM(theMenu, @"Stop AirPlay Mirroring", @selector(stopAirPlayMirroring:), GET_REL_IMG(stop))
+    }
   }
 #endif
 end:
@@ -1194,6 +1219,16 @@ end:
       [item setRepresentedObject:[WindowSel getDefault]];
     })
   }
+
+#ifndef NO_AIRPLAY
+  // Show AirPlay indicator when sending
+  if (is_airplay_sending && connectedSenderReceiver) {
+    NSString *mirroringTitle = [NSString stringWithFormat:@"🔵 Mirroring to %@", connectedSenderReceiver.name];
+    ADD_MENU_ITEM(theMenu, mirroringTitle, nil, GET_REL_IMG(airplay), {
+      [item setEnabled:NO];
+    })
+  }
+#endif
 
   if(!pvc){
     NSSlider* slider = [[NSSlider alloc] init];
@@ -1599,6 +1634,13 @@ end:
 
   #ifndef NO_AIRPLAY
   if(is_airplay_session) airplay_receiver_session_stop(self.conn);
+  if (airplaySender) {
+    sender_stop((sender_t *)airplaySender);
+    sender_destroy((sender_t *)airplaySender);
+    airplaySender = NULL;
+  }
+  connectedSenderReceiver = nil;
+  is_airplay_sending = false;
   #endif
 
   [self stopTimer];
@@ -1772,6 +1814,233 @@ end:
 
   // TODO: Phase 3 - Start pairing/authentication
   // TODO: Phase 4 - Set up streaming
+}
+
+// Sender state callback
+static void sender_state_callback(sender_state_t state, const char *error, void *ctx) {
+  Window *window = (__bridge Window *)ctx;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (!window) {
+      return;
+    }
+
+    switch (state) {
+      case SENDER_STATE_IDLE:
+        NSLog(@"AirPlay sender: Idle");
+        break;
+      case SENDER_STATE_CONNECTING:
+        NSLog(@"AirPlay sender: Connecting...");
+        break;
+      case SENDER_STATE_PAIRING:
+        NSLog(@"AirPlay sender: Pairing...");
+        break;
+      case SENDER_STATE_STREAMING:
+        NSLog(@"AirPlay sender: Streaming");
+        break;
+      case SENDER_STATE_ERROR:
+        NSLog(@"AirPlay sender: Error - %s", error ? error : "Unknown error");
+        if (error) {
+          NSAlert *alert = [[NSAlert alloc] init];
+          [alert setMessageText:@"AirPlay Mirroring Error"];
+          [alert setInformativeText:[NSString stringWithUTF8String:error]];
+          [alert addButtonWithTitle:@"OK"];
+          [alert setAlertStyle:NSAlertStyleWarning];
+          [alert runModal];
+        }
+        // Clean up on error
+        if (window->airplaySender) {
+          sender_destroy((sender_t *)window->airplaySender);
+          window->airplaySender = NULL;
+        }
+        window->connectedSenderReceiver = nil;
+        window->is_airplay_sending = false;
+        break;
+    }
+  });
+}
+
+- (void)connectToAirPlaySender:(id)sender {
+  NSMenuItem *item = (NSMenuItem *)sender;
+  AirPlayReceiver *receiver = [item representedObject];
+  if (!receiver) {
+    return;
+  }
+
+  // Stop existing sender if any
+  if (airplaySender) {
+    sender_stop((sender_t *)airplaySender);
+    sender_destroy((sender_t *)airplaySender);
+    airplaySender = NULL;
+  }
+
+  // Get receiver info from discovery
+  int count = 0;
+  airplay_receiver_t *receivers = airplay_discovery_get_receivers(&count);
+  airplay_receiver_t *c_receiver = NULL;
+
+  for (int i = 0; i < count; i++) {
+    if (strcmp(receivers[i].deviceId, [receiver.deviceId UTF8String]) == 0) {
+      c_receiver = &receivers[i];
+      break;
+    }
+  }
+
+  if (!c_receiver) {
+    if (receivers) {
+      free(receivers);
+    }
+    NSAlert *alert = [[NSAlert alloc] init];
+    [alert setMessageText:@"Connection Error"];
+    [alert setInformativeText:[NSString stringWithFormat:@"Receiver %@ not found", receiver.name]];
+    [alert addButtonWithTitle:@"OK"];
+    [alert setAlertStyle:NSAlertStyleWarning];
+    [alert runModal];
+    return;
+  }
+
+  // Initialize sender
+  sender_t *sender_obj = sender_init();
+  if (!sender_obj) {
+    if (receivers) {
+      free(receivers);
+    }
+    NSAlert *alert = [[NSAlert alloc] init];
+    [alert setMessageText:@"Initialization Error"];
+    [alert setInformativeText:@"Failed to initialize AirPlay sender"];
+    [alert addButtonWithTitle:@"OK"];
+    [alert setAlertStyle:NSAlertStyleWarning];
+    [alert runModal];
+    return;
+  }
+
+  // Set state callback
+  sender_set_state_callback(sender_obj, sender_state_callback, (__bridge void *)self);
+
+  // Get device info
+  NSString *deviceId = [[[NSHost currentHost] address] stringByReplacingOccurrencesOfString:@"." withString:@":"];
+  if (!deviceId || deviceId.length == 0) {
+    deviceId = @"00:00:00:00:00:00";  // Fallback
+  }
+
+  NSProcessInfo *processInfo = [NSProcessInfo processInfo];
+  NSString *osName = @"Mac OS X";
+  NSString *osVersion = [processInfo operatingSystemVersionString];
+  NSString *model = @"Mac";
+
+  // Try to get actual model
+  size_t size = 0;
+  sysctlbyname("hw.model", NULL, &size, NULL, 0);
+  if (size > 0) {
+    char *modelBuf = malloc(size);
+    if (modelBuf && sysctlbyname("hw.model", modelBuf, &size, NULL, 0) == 0) {
+      model = [NSString stringWithUTF8String:modelBuf];
+    }
+    if (modelBuf) {
+      free(modelBuf);
+    }
+  }
+
+  // Store receiver info before dispatching to background thread
+  AirPlayReceiver *receiverToConnect = receiver;
+
+  // Run sender connection on background thread to avoid blocking main UI thread
+  // This prevents deadlock when receiver's conn_init tries to use main queue
+  dispatch_queue_t senderQueue = dispatch_queue_create("com.pip.airplay.sender", DISPATCH_QUEUE_SERIAL);
+  dispatch_async(senderQueue, ^{
+    // Get hostname for device name
+    NSString *deviceName = [[NSHost currentHost] name];
+    if (!deviceName) {
+      deviceName = @"Mac";
+    }
+
+    // Connect to receiver (this blocks waiting for HTTP responses)
+    int result = sender_connect(sender_obj, c_receiver,
+                                [deviceId UTF8String],
+                                [osName UTF8String],
+                                [osVersion UTF8String],
+                                [model UTF8String],
+                                [deviceName UTF8String]);
+
+    if (receivers) {
+      free(receivers);
+    }
+
+    if (result != 0) {
+      sender_destroy(sender_obj);
+      dispatch_async(dispatch_get_main_queue(), ^{
+        NSAlert *alert = [[NSAlert alloc] init];
+        [alert setMessageText:@"Connection Error"];
+        [alert setInformativeText:[NSString stringWithFormat:@"Failed to connect to %@\n\nPlease check that the receiver is on the same network.", receiverToConnect.name]];
+        [alert addButtonWithTitle:@"OK"];
+        [alert setAlertStyle:NSAlertStyleWarning];
+        [alert runModal];
+      });
+      return;
+    }
+
+    // Start mirroring (will need to set up video/audio capture separately)
+    // For now, pass NULL as source_id - platform code will set up capture
+    result = sender_start_mirroring(sender_obj, NULL);
+
+    if (result != 0) {
+      sender_stop(sender_obj);
+      sender_destroy(sender_obj);
+      dispatch_async(dispatch_get_main_queue(), ^{
+        airplaySender = NULL;
+        connectedSenderReceiver = nil;
+        NSAlert *alert = [[NSAlert alloc] init];
+        [alert setMessageText:@"Mirroring Error"];
+        [alert setInformativeText:[NSString stringWithFormat:@"Failed to start mirroring to %@", receiverToConnect.name]];
+        [alert addButtonWithTitle:@"OK"];
+        [alert setAlertStyle:NSAlertStyleWarning];
+        [alert runModal];
+      });
+      return;
+    }
+
+    // Update UI on main thread
+    dispatch_async(dispatch_get_main_queue(), ^{
+      // Store sender and receiver
+      airplaySender = sender_obj;
+      connectedSenderReceiver = receiverToConnect;
+      is_airplay_sending = true;
+
+      // Update window title
+      [self setOwner:@"AirPlay Mirror" withTitle:[NSString stringWithFormat:@"Mirroring to %@", receiverToConnect.name]];
+    });
+  });
+
+  // TODO: When platform code creates video encoder, use quality preference:
+  // int quality = [(NSNumber*)getPref(@"airplay_sender_quality") intValue];
+  // int bitrate = quality == 0 ? 2000000 : (quality == 1 ? 5000000 : 10000000); // Low/Medium/High
+  // video_encoder_t *encoder = video_encoder_init(width, height, fps, bitrate);
+  // sender_set_video_encoder(sender_obj, encoder);
+
+  // TODO: When platform code creates audio encoder/capture, check audio preference:
+  // bool audio_enabled = [(NSNumber*)getPref(@"airplay_sender_audio") intValue] > 0;
+  // if (audio_enabled) {
+  //   audio_encoder_t *audio_enc = audio_encoder_init(44100, 2, 128000);
+  //   sender_set_audio_encoder(sender_obj, audio_enc);
+  //   // ... set up audio capture
+  // }
+
+  NSLog(@"Started AirPlay mirroring to: %@", receiver.name);
+}
+
+- (void)stopAirPlayMirroring:(id)sender {
+  if (!airplaySender) {
+    return;
+  }
+
+  sender_stop((sender_t *)airplaySender);
+  sender_destroy((sender_t *)airplaySender);
+  airplaySender = NULL;
+  connectedSenderReceiver = nil;
+  is_airplay_sending = false;
+
+  [self setOwner:nil withTitle:DEFAULT_TITLE];
+
+  NSLog(@"Stopped AirPlay mirroring");
 }
 #endif
 

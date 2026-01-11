@@ -289,6 +289,30 @@ httpd_thread(void *arg)
                 continue;
             }
 
+            /* Debug: log received data */
+            if (ret > 0) {
+                char debug_buf[256];
+                int debug_len = ret < 255 ? ret : 255;
+                memcpy(debug_buf, buffer, debug_len);
+                debug_buf[debug_len] = '\0';
+                // Replace non-printable chars with '.' for readability
+                for (int i = 0; i < debug_len; i++) {
+                    if (debug_buf[i] < 32 && debug_buf[i] != '\r' && debug_buf[i] != '\n' && debug_buf[i] != '\t') {
+                        debug_buf[i] = '.';
+                    }
+                }
+                logger_log(httpd->logger, LOGGER_INFO, "httpd received %d bytes: %.*s", ret, debug_len, debug_buf);
+            }
+            // Also log hex dump for binary data
+            if (ret > 0 && ret <= 100) {
+                char hex_buf[512];
+                int hex_pos = 0;
+                for (int i = 0; i < ret && hex_pos < 500; i++) {
+                    hex_pos += sprintf(hex_buf + hex_pos, "%02x ", (unsigned char)buffer[i]);
+                }
+                logger_log(httpd->logger, LOGGER_ERR, "httpd received %d bytes (hex): %s", ret, hex_buf);
+            }
+
             /* Parse HTTP request from data read from connection */
             http_request_add_data(connection->request, buffer, ret);
             if (http_request_has_error(connection->request)) {
@@ -313,15 +337,17 @@ httpd_thread(void *arg)
 
                     /* Get response data and datalen */
                     data = http_response_get_data(response, &datalen);
+                    logger_log(httpd->logger, LOGGER_ERR, "httpd: sending response, datalen=%d", datalen);
 
                     written = 0;
                     while (written < datalen) {
                         ret = send(connection->socket_fd, data+written, datalen-written, 0);
                         if (ret == -1) {
-                            logger_log(httpd->logger, LOGGER_ERR, "httpd error in sending data");
+                            logger_log(httpd->logger, LOGGER_ERR, "httpd error in sending data: %s", strerror(errno));
                             break;
                         }
                         written += ret;
+                        logger_log(httpd->logger, LOGGER_ERR, "httpd: sent %d bytes (total %d/%d)", ret, written, datalen);
                     }
 
                     if (http_response_get_disconnect(response)) {

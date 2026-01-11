@@ -20,21 +20,21 @@ void z_xor(unsigned char* in, unsigned char* out, int blocks)
 {
    for (int j = 0; j < blocks; j++)
       for (int i = 0; i < 16; i++)
-         out[j*16+i] = in[j*16+i] ^ z_key[i];   
+         out[j*16+i] = in[j*16+i] ^ z_key[i];
 }
 
 void x_xor(unsigned char* in, unsigned char* out, int blocks)
 {
    for (int j = 0; j < blocks; j++)
       for (int i = 0; i < 16; i++)
-         out[j*16+i] = in[j*16+i] ^ x_key[i];   
+         out[j*16+i] = in[j*16+i] ^ x_key[i];
 }
 
 
 void t_xor(unsigned char* in, unsigned char* out)
 {
    for (int i = 0; i < 16; i++)
-      out[i] = in[i] ^ t_key[i];   
+      out[i] = in[i] ^ t_key[i];
 }
 
 unsigned char sap_iv[] = {0x2B,0x84,0xFB,0x79,0xDA,0x75,0xB9,0x04,0x6C,0x24,0x73,0xF7,0xD1,0xC4,0xAB,0x0E,0x2B,0x84,0xFB,0x79,0x75,0xB9,0x04,0x6C,0x24,0x73};
@@ -52,8 +52,8 @@ unsigned char* table_index(int i)
 }
 
 unsigned char* message_table_index(int i)
-{   
-   return &table_s2[(97*i % 144) << 8];   
+{
+   return &table_s2[(97*i % 144) << 8];
 }
 
 void print_block(char* msg, unsigned char* dword)
@@ -70,7 +70,7 @@ void permute_block_1(unsigned char* block)
    block[4] = table_s3[0x400+block[4]];
    block[8] = table_s3[0x800+block[8]];
    block[12] = table_s3[0xc00+block[12]];
-   
+
    unsigned char tmp = block[13];
    block[13] = table_s3[0x100+block[9]];
    block[9] = table_s3[0xd00+block[5]];
@@ -105,7 +105,7 @@ void permute_block_2(unsigned char* block, int round)
    block[4] = permute_table_2(round*16+4)[block[4]];
    block[8] = permute_table_2(round*16+8)[block[8]];
    block[12] = permute_table_2(round*16+12)[block[12]];
-   
+
    unsigned char tmp = block[13];
    block[13] = permute_table_2(round*16+13)[block[9]];
    block[9] = permute_table_2(round*16+9)[block[5]];
@@ -129,7 +129,7 @@ void permute_block_2(unsigned char* block, int round)
 
 // This COULD just be Rijndael key expansion, but with a different set of S-boxes
 void generate_key_schedule(unsigned char* key_material, uint32_t key_schedule[11][4])
-{   
+{
    uint32_t key_data[4];
    int i;
    for (i = 0; i < 11; i++)
@@ -144,7 +144,7 @@ void generate_key_schedule(unsigned char* key_material, uint32_t key_schedule[11
    printf("Generating key schedule\n");
    // G
    print_block("Raw key material: ", key_material);
-   t_xor(key_material, buffer);   
+   t_xor(key_material, buffer);
    print_block("G has produced: ", buffer);
    for (int round = 0; round < 11; round++)
    {
@@ -182,7 +182,7 @@ void generate_key_schedule(unsigned char* key_material, uint32_t key_schedule[11
       // H
       key_schedule[round][2] = key_data[2];
       printf("H has set chunk3 to %08X\n", key_schedule[round][2]);
-      printf("H complete\n");      
+      printf("H complete\n");
 
       // J
       key_data[2] ^= key_data[1];
@@ -221,7 +221,7 @@ void cycle(unsigned char* block, uint32_t key_schedule[11][4])
       // Note that table_s5 is a table of 4-byte words. Therefore we do not need to <<2 these indices
       // TODO: Are these just T-tables?
       unsigned char* key0 = (unsigned char*)&key_schedule[9-round][0];
-      ptr1 = table_s5[block[3] ^ key0[3]]; 
+      ptr1 = table_s5[block[3] ^ key0[3]];
       ptr2 = table_s6[block[2] ^ key0[2]];
       ptr3 = table_s8[block[0] ^ key0[0]];
       ptr4 = table_s7[block[1] ^ key0[1]];
@@ -244,19 +244,19 @@ void cycle(unsigned char* block, uint32_t key_schedule[11][4])
       unsigned char* key2 = (unsigned char*)&key_schedule[9-round][2];
       unsigned char* key3 = (unsigned char*)&key_schedule[9-round][3];
       ((uint32_t*)block)[1] = ab;
-      ((uint32_t*)block)[2] = table_s5[block[11] ^ key2[3]] ^ 
-                              table_s6[block[10] ^ key2[2]] ^ 
-                              table_s7[block[9] ^ key2[1]] ^         
+      ((uint32_t*)block)[2] = table_s5[block[11] ^ key2[3]] ^
+                              table_s6[block[10] ^ key2[2]] ^
+                              table_s7[block[9] ^ key2[1]] ^
                               table_s8[block[8] ^ key2[0]];
 
-      ((uint32_t*)block)[3] = table_s5[block[15] ^ key3[3]] ^ 
-                              table_s6[block[14] ^ key3[2]] ^ 
-                              table_s7[block[13] ^ key3[1]] ^ 
-                              table_s8[block[12] ^ key3[0]];      
+      ((uint32_t*)block)[3] = table_s5[block[15] ^ key3[3]] ^
+                              table_s6[block[14] ^ key3[2]] ^
+                              table_s7[block[13] ^ key3[1]] ^
+                              table_s8[block[12] ^ key3[0]];
       printf("Set block2 = %08X, block3 = %08X\n", ((uint32_t*)block)[2], ((uint32_t*)block)[3]);
       // In the last round, instead of the permute, we do F
-         permute_block_2(block, 8-round);         
-   }      
+         permute_block_2(block, 8-round);
+   }
    printf("Using last bit of key up: %08X xor %08X -> %08X\n", ((uint32_t*)block)[0], key_schedule[0][0], ((uint32_t*)block)[0] ^ key_schedule[0][0]);
    ((uint32_t*)block)[0] ^= key_schedule[0][0];
    ((uint32_t*)block)[1] ^= key_schedule[0][1];
@@ -264,6 +264,268 @@ void cycle(unsigned char* block, uint32_t key_schedule[11][4])
    ((uint32_t*)block)[3] ^= key_schedule[0][3];
 }
 
+// Build inverse lookup table for a byte table
+// Given table[offset+i] for i in [0, size), builds inv_table such that inv_table[table[offset+i]] = i
+static void build_inv_table_byte(const unsigned char* table, unsigned char* inv_table, int offset, int size)
+{
+   for (int i = 0; i < size; i++) {
+      unsigned char val = table[offset + i];
+      if (val < size) {
+         inv_table[val] = (unsigned char)i;
+      }
+   }
+}
+
+// Inverse permute_block_1 - reverses the permutation
+// Must reverse operations in opposite order to preserve dependencies
+void inv_permute_block_1(unsigned char* block)
+{
+   // Build inverse lookup tables for each offset used in permute_block_1
+   static unsigned char inv_table_s3_000[256];
+   static unsigned char inv_table_s3_100[256];
+   static unsigned char inv_table_s3_200[256];
+   static unsigned char inv_table_s3_300[256];
+   static unsigned char inv_table_s3_400[256];
+   static unsigned char inv_table_s3_500[256];
+   static unsigned char inv_table_s3_600[256];
+   static unsigned char inv_table_s3_700[256];
+   static unsigned char inv_table_s3_800[256];
+   static unsigned char inv_table_s3_900[256];
+   static unsigned char inv_table_s3_a00[256];
+   static unsigned char inv_table_s3_b00[256];
+   static unsigned char inv_table_s3_c00[256];
+   static unsigned char inv_table_s3_d00[256];
+   static unsigned char inv_table_s3_e00[256];
+   static unsigned char inv_table_s3_f00[256];
+   static int tables_built = 0;
+
+   if (!tables_built) {
+      build_inv_table_byte(table_s3, inv_table_s3_000, 0x000, 256);
+      build_inv_table_byte(table_s3, inv_table_s3_100, 0x100, 256);
+      build_inv_table_byte(table_s3, inv_table_s3_200, 0x200, 256);
+      build_inv_table_byte(table_s3, inv_table_s3_300, 0x300, 256);
+      build_inv_table_byte(table_s3, inv_table_s3_400, 0x400, 256);
+      build_inv_table_byte(table_s3, inv_table_s3_500, 0x500, 256);
+      build_inv_table_byte(table_s3, inv_table_s3_600, 0x600, 256);
+      build_inv_table_byte(table_s3, inv_table_s3_700, 0x700, 256);
+      build_inv_table_byte(table_s3, inv_table_s3_800, 0x800, 256);
+      build_inv_table_byte(table_s3, inv_table_s3_900, 0x900, 256);
+      build_inv_table_byte(table_s3, inv_table_s3_a00, 0xa00, 256);
+      build_inv_table_byte(table_s3, inv_table_s3_b00, 0xb00, 256);
+      build_inv_table_byte(table_s3, inv_table_s3_c00, 0xc00, 256);
+      build_inv_table_byte(table_s3, inv_table_s3_d00, 0xd00, 256);
+      build_inv_table_byte(table_s3, inv_table_s3_e00, 0xe00, 256);
+      build_inv_table_byte(table_s3, inv_table_s3_f00, 0xf00, 256);
+      tables_built = 1;
+   }
+
+   // Save current values before reversing
+   unsigned char saved[16];
+   memcpy(saved, block, 16);
+
+   // Reverse operations in opposite order
+   // Forward: block[15] = table_s3[0xb00+tmp] where tmp was old block[3]
+   // Reverse: find tmp such that table_s3[0xb00+tmp] = block[15], then block[3] = tmp
+   unsigned char tmp = inv_table_s3_b00[saved[15]];
+
+   // Forward: block[11] = table_s3[0x700+block[15]] (old block[15])
+   // Reverse: find old block[15] such that table_s3[0x700+old_block[15]] = block[11]
+   unsigned char old_block15 = inv_table_s3_700[saved[11]];
+
+   // Forward: block[7] = table_s3[0x300+block[11]] (old block[11])
+   unsigned char old_block11 = inv_table_s3_300[saved[7]];
+
+   // Forward: block[3] = table_s3[0xf00+block[7]] (old block[7])
+   unsigned char old_block7 = inv_table_s3_f00[saved[3]];
+
+   // Restore values
+   block[3] = tmp;
+   block[7] = old_block7;
+   block[11] = old_block11;
+   block[15] = old_block15;
+
+   // Forward: block[14] = table_s3[0x600+tmp] where tmp was old block[6]
+   tmp = inv_table_s3_600[saved[14]];
+
+   // Forward: block[6] = table_s3[0xe00+block[14]] (old block[14])
+   unsigned char old_block14 = inv_table_s3_e00[saved[6]];
+
+   block[6] = tmp;
+   block[14] = old_block14;
+
+   // Forward: block[10] = table_s3[0x200+tmp] where tmp was old block[2]
+   tmp = inv_table_s3_200[saved[10]];
+
+   // Forward: block[2] = table_s3[0xa00+block[10]] (old block[10])
+   unsigned char old_block10 = inv_table_s3_a00[saved[2]];
+
+   block[2] = tmp;
+   block[10] = old_block10;
+
+   // Forward: block[1] = table_s3[0x500+tmp] where tmp was old block[13]
+   tmp = inv_table_s3_500[saved[1]];
+
+   // Forward: block[5] = table_s3[0x900+block[1]] (old block[1])
+   unsigned char old_block1 = inv_table_s3_900[saved[5]];
+
+   // Forward: block[9] = table_s3[0xd00+block[5]] (old block[5])
+   unsigned char old_block5 = inv_table_s3_d00[saved[9]];
+
+   // Forward: block[13] = table_s3[0x100+block[9]] (old block[9])
+   unsigned char old_block9 = inv_table_s3_100[saved[13]];
+
+   block[1] = old_block1;
+   block[5] = old_block5;
+   block[9] = old_block9;
+   block[13] = tmp;
+
+   // Reverse the direct mappings (these don't depend on other values)
+   block[12] = inv_table_s3_c00[saved[12]];
+   block[8] = inv_table_s3_800[saved[8]];
+   block[4] = inv_table_s3_400[saved[4]];
+   block[0] = inv_table_s3_000[saved[0]];
+}
+
+// Helper function to get inverse value from table_s4
+static unsigned char get_inv_s4(int base_idx, unsigned char val)
+{
+   static unsigned char inv_cache[144][256];
+   static int cache_built[144] = {0};
+
+   int offset_idx = (71 * base_idx) % 144;
+   int offset = offset_idx << 8;
+
+   if (!cache_built[offset_idx]) {
+      build_inv_table_byte(table_s4, inv_cache[offset_idx], offset, 256);
+      cache_built[offset_idx] = 1;
+   }
+
+   return inv_cache[offset_idx][val];
+}
+
+// Inverse permute_block_2 - reverses the permutation for a given round
+void inv_permute_block_2(unsigned char* block, int round)
+{
+   // Build inverse lookup tables for table_s4 on-the-fly
+   // table_s4 is accessed via permute_table_2(round*16+i) which returns &table_s4[((71 * (round*16+i)) % 144) << 8]
+
+   // Save current values
+   unsigned char saved[16];
+   memcpy(saved, block, 16);
+
+   int base = round * 16;
+
+   // Reverse operations in opposite order
+   // Forward: block[15] = permute_table_2(round*16+15)[tmp] where tmp was old block[3]
+   unsigned char tmp = get_inv_s4(base + 15, saved[15]);
+
+   // Forward: block[11] = permute_table_2(round*16+11)[block[15]] (old block[15])
+   unsigned char old_block15 = get_inv_s4(base + 11, saved[11]);
+
+   // Forward: block[7] = permute_table_2(round*16+7)[block[11]] (old block[11])
+   unsigned char old_block11 = get_inv_s4(base + 7, saved[7]);
+
+   // Forward: block[3] = permute_table_2(round*16+3)[block[7]] (old block[7])
+   unsigned char old_block7 = get_inv_s4(base + 3, saved[3]);
+
+   block[3] = tmp;
+   block[7] = old_block7;
+   block[11] = old_block11;
+   block[15] = old_block15;
+
+   // Forward: block[14] = permute_table_2(round*16+14)[tmp] where tmp was old block[6]
+   tmp = get_inv_s4(base + 14, saved[14]);
+
+   // Forward: block[6] = permute_table_2(round*16+6)[block[14]] (old block[14])
+   unsigned char old_block14 = get_inv_s4(base + 6, saved[6]);
+
+   block[6] = tmp;
+   block[14] = old_block14;
+
+   // Forward: block[10] = permute_table_2(round*16+10)[tmp] where tmp was old block[2]
+   tmp = get_inv_s4(base + 10, saved[10]);
+
+   // Forward: block[2] = permute_table_2(round*16+2)[block[10]] (old block[10])
+   unsigned char old_block10 = get_inv_s4(base + 2, saved[2]);
+
+   block[2] = tmp;
+   block[10] = old_block10;
+
+   // Forward: block[13] = permute_table_2(round*16+13)[block[9]] (old block[9])
+   unsigned char old_block9 = get_inv_s4(base + 13, saved[13]);
+
+   // Forward: block[9] = permute_table_2(round*16+9)[block[5]] (old block[5])
+   unsigned char old_block5 = get_inv_s4(base + 9, saved[9]);
+
+   // Forward: block[5] = permute_table_2(round*16+5)[block[1]] (old block[1])
+   unsigned char old_block1 = get_inv_s4(base + 5, saved[5]);
+
+   // Forward: block[1] = permute_table_2(round*16+1)[tmp] where tmp was old block[13]
+   tmp = get_inv_s4(base + 1, saved[1]);
+
+   block[1] = old_block1;
+   block[5] = old_block5;
+   block[9] = old_block9;
+   block[13] = tmp;
+
+   // Reverse direct mappings
+   block[12] = get_inv_s4(base + 12, saved[12]);
+   block[8] = get_inv_s4(base + 8, saved[8]);
+   block[4] = get_inv_s4(base + 4, saved[4]);
+   block[0] = get_inv_s4(base + 0, saved[0]);
+}
+
+// Inverse cycle function - reverses the cycle operation
+// NOTE: This is a complex operation because the forward cycle involves XORing multiple table lookups
+// The cycle rounds are particularly difficult to invert because:
+// - block[0] = table_s5[...] ^ table_s6[...] ^ table_s7[...] ^ table_s8[...]
+// - Given block[0], we cannot uniquely determine the individual table lookup values
+//
+// However, for encryption we may not need to fully reverse cycle - we can work around it
+// by choosing appropriate values for chunk1 and chunk2
+void inv_cycle(unsigned char* block, uint32_t key_schedule[11][4])
+{
+   // Reverse step 4: XOR with key_schedule[0] (this undoes the final XOR)
+   ((uint32_t*)block)[0] ^= key_schedule[0][0];
+   ((uint32_t*)block)[1] ^= key_schedule[0][1];
+   ((uint32_t*)block)[2] ^= key_schedule[0][2];
+   ((uint32_t*)block)[3] ^= key_schedule[0][3];
+
+   // Reverse 9 rounds (in reverse order: round 8 down to 0)
+   for (int round = 8; round >= 0; round--)
+   {
+      // Reverse permute_block_2 (this must be done first, before reversing the word operations)
+      inv_permute_block_2(block, round);
+
+      // Reverse the word operations
+      // Forward: block[3] = table_s5[block[15]^key3[3]] ^ table_s6[block[14]^key3[2]] ^ table_s7[block[13]^key3[1]] ^ table_s8[block[12]^key3[0]]
+      // Forward: block[2] = table_s5[block[11]^key2[3]] ^ table_s6[block[10]^key2[2]] ^ table_s7[block[9]^key2[1]] ^ table_s8[block[8]^key2[0]]
+      // Forward: block[1] = ab (computed from block[4-7])
+      // Forward: block[0] = ab (computed from block[0-3])
+
+      // This is extremely difficult to invert because we have:
+      // block[0] = f(block[0], block[1], block[2], block[3], key0)
+      // block[1] = f(block[4], block[5], block[6], block[7], key1)
+      // block[2] = f(block[8], block[9], block[10], block[11], key2)
+      // block[3] = f(block[12], block[13], block[14], block[15], key3)
+      // where f involves XORing table lookups
+
+      // TODO: Implement proper inverse for the table lookups
+      // This may require building inverse lookup tables for table_s5-s8
+      // or using a different approach (e.g., brute force search for small values)
+
+      // For now, this is a placeholder - the encryption function will need to work around this
+   }
+
+   // Reverse permute_block_1
+   inv_permute_block_1(block);
+
+   // Reverse step 1: XOR with key_schedule[10] (this undoes the initial XOR)
+   ((uint32_t*)block)[0] ^= key_schedule[10][0];
+   ((uint32_t*)block)[1] ^= key_schedule[10][1];
+   ((uint32_t*)block)[2] ^= key_schedule[10][2];
+   ((uint32_t*)block)[3] ^= key_schedule[10][3];
+}
 
 void decrypt_sap(unsigned char* sapIn, unsigned char* sapOut)
 {
@@ -334,17 +596,17 @@ void decryptMessage(unsigned char* messageIn, unsigned char* decryptedMessage)
    int mode = messageIn[12];  // 0,1,2,3
    printf("mode = %02x\n", mode);
    generate_key_schedule(initial_session_key, key_schedule);
-      
+
    // For M0-M6 we follow the same pattern
    for (i = 0; i < 8; i++)
-   {      
+   {
       // First, copy in the nth block (we must start with the last one)
       for (j = 0; j < 16; j++)
       {
          if (mode == 3)
             buffer[j] = messageIn[(0x80-0x10*i)+j];
          else if (mode == 2 || mode == 1 || mode == 0)
-            buffer[j] = messageIn[(0x10*(i+1))+j];   
+            buffer[j] = messageIn[(0x10*(i+1))+j];
       }
       // do this permutation and update 9 times. Could this be cycle(), or the reverse of cycle()?
       for (j = 0; j < 9; j++)
@@ -378,14 +640,14 @@ void decryptMessage(unsigned char* messageIn, unsigned char* decryptedMessage)
          // Now we must replace the entire buffer with 4 words that we read and xor together
          uint32_t word;
          uint32_t* block = (uint32_t*)buffer;
-         
-         block[0] = table_s9[0x000 + buffer[0x0]] ^ 
-                    table_s9[0x100 + buffer[0x1]] ^ 
-                    table_s9[0x200 + buffer[0x2]] ^ 
+
+         block[0] = table_s9[0x000 + buffer[0x0]] ^
+                    table_s9[0x100 + buffer[0x1]] ^
+                    table_s9[0x200 + buffer[0x2]] ^
                     table_s9[0x300 + buffer[0x3]];
-         block[1] = table_s9[0x000 + buffer[0x4]] ^ 
-                    table_s9[0x100 + buffer[0x5]] ^ 
-                    table_s9[0x200 + buffer[0x6]] ^ 
+         block[1] = table_s9[0x000 + buffer[0x4]] ^
+                    table_s9[0x100 + buffer[0x5]] ^
+                    table_s9[0x200 + buffer[0x6]] ^
                     table_s9[0x300 + buffer[0x7]];
          block[2] = table_s9[0x000 + buffer[0x8]] ^
                     table_s9[0x100 + buffer[0x9]] ^
@@ -444,10 +706,10 @@ void decryptMessage(unsigned char* messageIn, unsigned char* decryptedMessage)
    }
 }
 
-unsigned char static_source_1[] = {0xFA, 0x9C, 0xAD, 0x4D, 0x4B, 0x68, 0x26, 0x8C, 0x7F, 0xF3, 0x88, 0x99, 0xDE, 0x92, 0x2E, 0x95, 
+unsigned char static_source_1[] = {0xFA, 0x9C, 0xAD, 0x4D, 0x4B, 0x68, 0x26, 0x8C, 0x7F, 0xF3, 0x88, 0x99, 0xDE, 0x92, 0x2E, 0x95,
                                    0x1E};
-unsigned char static_source_2[] = {0xEC, 0x4E, 0x27, 0x5E, 0xFD, 0xF2, 0xE8, 0x30, 0x97, 0xAE, 0x70, 0xFB, 0xE0, 0x00, 0x3F, 0x1C, 
-                                   0x39, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+unsigned char static_source_2[] = {0xEC, 0x4E, 0x27, 0x5E, 0xFD, 0xF2, 0xE8, 0x30, 0x97, 0xAE, 0x70, 0xFB, 0xE0, 0x00, 0x3F, 0x1C,
+                                   0x39, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x09, 0x00, 0x0, 0x00, 0x00, 0x00, 0x00};
 
 void swap_bytes(unsigned char* a, unsigned char *b)
@@ -487,7 +749,7 @@ void generate_session_key(unsigned char* oldSap, unsigned char* messageIn, unsig
       printf("MD5 OK\n");
       sap_hash(base, sessionKey);
       printf("OtherHash OK\n");
-      
+
       printf("MD5       = ");
       for (i = 0; i < 4; i++)
          printf("%08x ", ((uint32_t*)md5)[i]);
@@ -501,7 +763,7 @@ void generate_session_key(unsigned char* oldSap, unsigned char* messageIn, unsig
       for (i = 0; i < 4; i++)
       {
          sessionKeyWords[i] = (sessionKeyWords[i] + md5Words[i]) & 0xffffffff;
-      }      
+      }
       printf("Current key: ");
       for (i = 0; i < 16; i++)
          printf("%02x", sessionKey[i]);
@@ -512,7 +774,7 @@ void generate_session_key(unsigned char* oldSap, unsigned char* messageIn, unsig
       swap_bytes(&sessionKey[i], &sessionKey[i+3]);
       swap_bytes(&sessionKey[i+1], &sessionKey[i+2]);
    }
-      
+
    // Finally the whole thing is XORd with 121:
    for (i = 0; i < 16; i++)
      sessionKey[i] ^= 121;

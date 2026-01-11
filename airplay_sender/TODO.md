@@ -179,48 +179,174 @@ Based on analysis of the existing receiver implementation, AirPlay 2 uses:
 ### Phase 3: Authentication and Pairing
 
 #### Step 3.1: Implement Pair-Setup (Client Side)
-- [ ] Create `airplay_sender/pairing_client.h` and `.c`
-- [ ] Generate Ed25519 keypair for this device
-- [ ] Send `POST /pair-setup` with 32-byte public key
-- [ ] Receive receiver's Ed25519 public key (32 bytes)
-- [ ] Store receiver's public key for pair-verify
+- [x] Create `airplay_sender/pairing_client.h` and `.c`
+- [x] Generate Ed25519 keypair for this device
+- [x] Send `POST /pair-setup` with 32-byte public key
+- [x] Receive receiver's Ed25519 public key (32 bytes)
+- [x] Store receiver's public key for pair-verify
 
 #### Step 3.2: Implement Pair-Verify (Client Side)
-- [ ] Generate X25519 keypair (ephemeral)
-- [ ] Send `POST /pair-verify` with:
+- [x] Generate X25519 keypair (ephemeral)
+- [x] Send `POST /pair-verify` with:
   - Byte 0: 0x01 (verify mode 1)
   - Bytes 1-3: 0x00 0x00 0x00
   - Bytes 4-35: X25519 public key
   - Bytes 36-67: Ed25519 public key
-- [ ] Receive response with receiver's X25519 public key + signature
-- [ ] Compute shared secret using X25519
-- [ ] Derive encryption keys using HKDF-SHA512
-- [ ] Verify receiver's signature
-- [ ] Generate our signature and send in step 2
-- [ ] Send `POST /pair-verify` with:
+- [x] Receive response with receiver's X25519 public key + signature
+- [x] Compute shared secret using X25519
+- [x] Derive encryption keys using HKDF-SHA512
+- [x] Verify receiver's signature
+- [x] Generate our signature and send in step 2
+- [x] Send `POST /pair-verify` with:
   - Byte 0: 0x00 (verify mode 0)
   - Bytes 1-3: 0x00 0x00 0x00
   - Bytes 4-67: Our signature
 
 #### Step 3.3: Implement FairPlay Setup (Client Side)
-- [ ] Study `fairplay_playfair.c` to understand FairPlay protocol
-- [ ] Send `POST /fp-setup` with 16-byte challenge
-- [ ] Receive 142-byte response
-- [ ] Send `POST /fp-setup` with 164-byte handshake data
-- [ ] Receive 32-byte response (session key material)
-- [ ] Derive AES key for video encryption
+- [x] Study `fairplay_playfair.c` to understand FairPlay protocol
+- [x] Send `POST /fp-setup` with 16-byte challenge
+- [x] Receive 142-byte response
+- [x] Send `POST /fp-setup` with 164-byte handshake data
+- [x] Receive 32-byte response (session key material)
+- [x] Derive AES key for video encryption
 
 **Note:** FairPlay is Apple's proprietary DRM. The existing receiver code has
 a reverse-engineered implementation. For sender, we need to generate valid
 FairPlay messages that the receiver will accept.
+
+**How to overcome this:**
+
+1. **Reverse engineer `playfair_encrypt`** (Recommended):
+   - Implement the inverse of `playfair_decrypt()` in `airplay/playfair/playfair.c`
+   - The decryption process: `generate_session_key()` → `generate_key_schedule()` → `z_xor()` → `cycle()` → XOR with chunk1 → `x_xor()` → `z_xor()`
+   - To encrypt: Start with 16-byte AES key, reverse all operations
+   - Key challenge: Reverse `cycle()` which uses custom AES-like operations with lookup tables
+   - The 72-byte `ekey` format: bytes 0-15 (padding?), bytes 16-31 (`chunk1`), bytes 32-55 (padding?), bytes 56-71 (`chunk2`)
+
+2. **Find existing implementations**:
+   - Search for open-source AirPlay sender projects (shairplay-sync, airplay-sender, etc.)
+   - Check if any have implemented FairPlay encryption for `ekey` generation
+
+3. **Capture and analyze real device traffic**:
+   - Use Wireshark to capture SETUP requests from real Apple devices
+   - Extract `ekey` values and analyze patterns
+   - Try to reverse-engineer the generation algorithm
+
+4. **Temporary workaround** (development only):
+   - Modify receiver to accept unencrypted keys for testing
+   - Not suitable for production use
+
+---
+
+## Captured Data from Real Apple Device (2026-01-11)
+
+### ekey (72 bytes) - Encrypted AES Key
+```
+46 50 4c 59 01 02 01 00 00 00 00 3c 00 00 00 00  [Header: FPLY magic + version]
+c5 0c ac 96 a9 79 fa 3a 3d e6 ab 3f c0 e2 31 e3  [chunk1: bytes 16-31]
+00 00 00 10 bf f3 9f 5f ea 72 4f 63 d6 16 45 6e  [Middle padding/data]
+c6 f3 2a 14 20 a9 f5 27                          [Middle padding/data (cont.)]
+d1 df 7d 8c d2 d5 bd ae 41 bb aa 66 b0 3f dd 1a  [chunk2: bytes 56-71]
+```
+
+C array format:
+```c
+unsigned char ekey[72] = {
+  0x46, 0x50, 0x4c, 0x59, 0x01, 0x02, 0x01, 0x00, 0x00, 0x00, 0x00, 0x3c, 0x00, 0x00, 0x00, 0x00,
+  0xc5, 0x0c, 0xac, 0x96, 0xa9, 0x79, 0xfa, 0x3a, 0x3d, 0xe6, 0xab, 0x3f, 0xc0, 0xe2, 0x31, 0xe3,
+  0x00, 0x00, 0x00, 0x10, 0xbf, 0xf3, 0x9f, 0x5f, 0xea, 0x72, 0x4f, 0x63, 0xd6, 0x16, 0x45, 0x6e,
+  0xc6, 0xf3, 0x2a, 0x14, 0x20, 0xa9, 0xf5, 0x27, 0xd1, 0xdf, 0x7d, 0x8c, 0xd2, 0xd5, 0xbd, 0xae,
+  0x41, 0xbb, 0xaa, 0x66, 0xb0, 0x3f, 0xdd, 0x1a
+};
+```
+
+### aeskey (16 bytes) - Decrypted AES Key
+```
+da 98 33 7c 29 23 06 42 45 a6 34 f6 af f1 15 64
+```
+
+C array format:
+```c
+unsigned char aeskey[16] = {
+  0xda, 0x98, 0x33, 0x7c, 0x29, 0x23, 0x06, 0x42, 0x45, 0xa6, 0x34, 0xf6, 0xaf, 0xf1, 0x15, 0x64
+};
+```
+
+### eiv (16 bytes) - Initialization Vector
+```
+1b f3 44 c1 42 0e 58 62 84 c2 eb fa 8d d0 29 5c
+```
+
+C array format:
+```c
+unsigned char eiv[16] = {
+  0x1b, 0xf3, 0x44, 0xc1, 0x42, 0x0e, 0x58, 0x62, 0x84, 0xc2, 0xeb, 0xfa, 0x8d, 0xd0, 0x29, 0x5c
+};
+```
+
+### ecdh_secret (32 bytes) - Shared ECDH Secret
+```
+7b 51 9c 2a 82 1e 18 94 fa 31 d5 fc 24 17 8a 01
+e0 39 be 34 ae ac 49 5a 37 78 36 36 42 38 33 43
+```
+
+### FairPlay handshake message (message3, 164 bytes)
+```
+46 50 4c 59 03 01 03 00 00 00 00 98 03 8f 1a 9c
+2f 66 06 ea a1 df d6 d4 32 30 2e e7 c9 a1 30 6c
+79 fc 3e f8 0c aa 23 d1 79 77 ab 5e 3c 5c b8 58
+cf ef cc b7 32 06 b5 cc eb 06 8a 95 55 df 0b 52
+79 1d a2 96 19 f5 1f 2c a8 8b d1 67 fd dd 28 4c
+95 bd 12 95 96 3c f6 ba 21 2f f4 2f 3a 04 4a 95
+10 cd 39 f6 4a c8 5b 7d 43 8a 36 ce 47 31 e6 16
+78 a7 4b 54 fd f5 70 a8 a5 5b 37 7b cd a6 3c 07
+53 88 a9 5a 7b b3 c0 a6 a4 6c 83 4e da 98 6b 09
+8d 8f 69 84 80 e3 32 c4 f6 db cc 95 98 c5 32 b0
+7b 71 0d b7
+```
+
+C array format:
+```c
+unsigned char message3[164] = {
+  0x46, 0x50, 0x4c, 0x59, 0x03, 0x01, 0x03, 0x00, 0x00, 0x00, 0x00, 0x98, 0x03, 0x8f, 0x1a, 0x9c,
+  0x2f, 0x66, 0x06, 0xea, 0xa1, 0xdf, 0xd6, 0xd4, 0x32, 0x30, 0x2e, 0xe7, 0xc9, 0xa1, 0x30, 0x6c,
+  0x79, 0xfc, 0x3e, 0xf8, 0x0c, 0xaa, 0x23, 0xd1, 0x79, 0x77, 0xab, 0x5e, 0x3c, 0x5c, 0xb8, 0x58,
+  0xcf, 0xef, 0xcc, 0xb7, 0x32, 0x06, 0xb5, 0xcc, 0xeb, 0x06, 0x8a, 0x95, 0x55, 0xdf, 0x0b, 0x52,
+  0x79, 0x1d, 0xa2, 0x96, 0x19, 0xf5, 0x1f, 0x2c, 0xa8, 0x8b, 0xd1, 0x67, 0xfd, 0xdd, 0x28, 0x4c,
+  0x95, 0xbd, 0x12, 0x95, 0x96, 0x3c, 0xf6, 0xba, 0x21, 0x2f, 0xf4, 0x2f, 0x3a, 0x04, 0x4a, 0x95,
+  0x10, 0xcd, 0x39, 0xf6, 0x4a, 0xc8, 0x5b, 0x7d, 0x43, 0x8a, 0x36, 0xce, 0x47, 0x31, 0xe6, 0x16,
+  0x78, 0xa7, 0x4b, 0x54, 0xfd, 0xf5, 0x70, 0xa8, 0xa5, 0x5b, 0x37, 0x7b, 0xcd, 0xa6, 0x3c, 0x07,
+  0x53, 0x88, 0xa9, 0x5a, 0x7b, 0xb3, 0xc0, 0xa6, 0xa4, 0x6c, 0x83, 0x4e, 0xda, 0x98, 0x6b, 0x09,
+  0x8d, 0x8f, 0x69, 0x84, 0x80, 0xe3, 0x32, 0xc4, 0xf6, 0xdb, 0xcc, 0x95, 0x98, 0xc5, 0x32, 0xb0,
+  0x7b, 0x71, 0x0d, 0xb7
+};
+```
+
+### Analysis Notes:
+- **ekey structure**: 16-byte header + 16-byte chunk1 + 24-byte middle + 16-byte chunk2 = 72 bytes total
+- **chunk1** (bytes 16-31) and **chunk2** (bytes 56-71) are used in `playfair_decrypt()`
+- The decryption process: `generate_session_key()` → `generate_key_schedule()` → `z_xor()` → `cycle()` → XOR with chunk1 → `x_xor()` → `z_xor()`
+- **message3** (164 bytes) is used in `generate_session_key()` to derive the session key for decryption
+- **User-Agent**: `AirPlay/665.13.1` (real Apple device)
+- **Complete test data**: We now have all the data needed to test reverse engineering:
+  - `message3` (164 bytes) - FairPlay handshake message
+  - `ekey` (72 bytes) - Encrypted AES key
+  - `aeskey` (16 bytes) - Decrypted AES key (expected output)
+  - `eiv` (16 bytes) - Initialization vector
+  - `ecdh_secret` (32 bytes) - Shared ECDH secret
+
+### Next Steps:
+1. Capture the FairPlay handshake message (`message3`) from earlier in the connection flow
+2. Use the captured data to test reverse engineering of `playfair_encrypt()`
+3. Implement `playfair_encrypt()` based on reversing `playfair_decrypt()`
 
 ---
 
 ### Phase 4: Stream Setup and Control
 
 #### Step 4.1: Implement Stream Setup
-- [ ] Create `airplay_sender/stream_client.h` and `.c`
-- [ ] Build `/stream` request binary plist with:
+- [x] Create `airplay_sender/stream_client.h` and `.c`
+- [x] Build `/stream` request binary plist with:
   ```
   {
     "streams": [{
@@ -237,29 +363,29 @@ FairPlay messages that the receiver will accept.
     "model": "MacBookPro..."
   }
   ```
-- [ ] Parse response for:
+- [x] Parse response for:
   - `streams[0].dataPort` (TCP port for video)
   - `streams[0].controlPort` (if applicable)
   - `eventPort` (for feedback)
-- [ ] Store `streamConnectionID` for AES key derivation
+- [x] Store `streamConnectionID` for AES key derivation
 
 #### Step 4.2: Implement Video Stream Connection
-- [ ] Connect TCP socket to receiver's `dataPort`
-- [ ] Initialize AES-CTR encryption using derived key
-- [ ] The stream connection ID is used for AES IV derivation
+- [x] Connect TCP socket to receiver's `dataPort`
+- [x] Initialize AES-CTR encryption using derived key
+- [x] The stream connection ID is used for AES IV derivation
   (see `mirror_buffer_init_aes` in `mirror_buffer.c`)
 
 #### Step 4.3: Implement Feedback Channel
-- [ ] Connect to `eventPort` for receiver feedback
-- [ ] Handle heartbeat/keep-alive messages
-- [ ] Process rate control feedback
+- [x] Connect to `eventPort` for receiver feedback
+- [x] Handle heartbeat/keep-alive messages
+- [x] Process rate control feedback
 
 ---
 
 ### Phase 5: Video Encoding and Streaming
 
 #### Step 5.1: Define Video Encoder Interface
-- [ ] Create `airplay_sender/video_encoder.h`:
+- [x] Create `airplay_sender/video_encoder.h`:
   ```c
   typedef struct video_encoder_s video_encoder_t;
   typedef void (*encoded_frame_callback_t)(
@@ -292,7 +418,7 @@ FairPlay messages that the receiver will accept.
   - Handle `VTCompressionOutputCallback` and call C callback
 
 #### Step 5.2: Create Video Packetizer
-- [ ] Create `airplay_sender/video_packetizer.h` and `.c`
+- [x] Create `airplay_sender/video_packetizer.h` and `.c`
 - [ ] Format packets according to receiver's expected format:
   ```c
   struct video_packet_header {
@@ -309,7 +435,7 @@ FairPlay messages that the receiver will accept.
 - [ ] Send 128-byte header followed by encrypted payload
 
 #### Step 5.3: Define Frame Capture Interface
-- [ ] Create `airplay_sender/frame_capture.h`:
+- [x] Create `airplay_sender/frame_capture.h`:
   ```c
   typedef struct frame_capture_s frame_capture_t;
   typedef void (*frame_capture_callback_t)(
@@ -340,7 +466,7 @@ FairPlay messages that the receiver will accept.
 ### Phase 6: Audio Capture and Streaming
 
 #### Step 6.1: Define Audio Capture Interface
-- [ ] Create `airplay_sender/audio_capture.h`:
+- [x] Create `airplay_sender/audio_capture.h`:
   ```c
   typedef struct audio_capture_s audio_capture_t;
   typedef void (*audio_samples_callback_t)(
@@ -372,7 +498,7 @@ FairPlay messages that the receiver will accept.
 3. Limiting to app-specific audio
 
 #### Step 6.2: Define Audio Encoder Interface
-- [ ] Create `airplay_sender/audio_encoder.h`:
+- [x] Create `airplay_sender/audio_encoder.h`:
   ```c
   typedef struct audio_encoder_s audio_encoder_t;
   typedef void (*encoded_audio_callback_t)(
@@ -397,11 +523,11 @@ FairPlay messages that the receiver will accept.
   - Call C callback with encoded data
 
 #### Step 6.3: RTP Audio Streaming
-- [ ] Create UDP socket for audio
-- [ ] Implement RTP packetization (RFC 3550)
-- [ ] Calculate RTP timestamps based on sample count
-- [ ] Add RTP header (version, payload type, sequence number, timestamp, SSRC)
-- [ ] Handle RTCP for synchronization if needed
+- [x] Create UDP socket for audio
+- [x] Implement RTP packetization (RFC 3550)
+- [x] Calculate RTP timestamps based on sample count
+- [x] Add RTP header (version, payload type, sequence number, timestamp, SSRC)
+- [x] Handle RTCP for synchronization if needed
 
 #### Step 6.4: Audio-Video Synchronization
 - [ ] Use NTP timestamps for both streams
@@ -413,23 +539,23 @@ FairPlay messages that the receiver will accept.
 ### Phase 7: NTP Time Synchronization
 
 #### Step 7.1: Implement NTP Client
-- [ ] Create `airplay_sender/ntp_client.h` and `.c`
-- [ ] Study `raop_ntp.c` for existing NTP implementation
-- [ ] Send NTP requests to receiver's timing port
-- [ ] Calculate round-trip time and clock offset
-- [ ] Maintain running average of offset
+- [x] Create `airplay_sender/ntp_client.h` and `.c`
+- [x] Study `raop_ntp.c` for existing NTP implementation
+- [x] Send NTP requests to receiver's timing port
+- [x] Calculate round-trip time and clock offset
+- [x] Maintain running average of offset
 
 #### Step 7.2: Timestamp Conversion
-- [ ] Convert local timestamps to NTP format
-- [ ] Apply clock offset for accurate sync
-- [ ] Handle timestamp wraparound
+- [x] Convert local timestamps to NTP format
+- [x] Apply clock offset for accurate sync
+- [x] Handle timestamp wraparound
 
 ---
 
 ### Phase 8: Integration and State Management
 
 #### Step 8.1: Create Sender Manager
-- [ ] Create `airplay_sender/sender.h`:
+- [x] Create `airplay_sender/sender.h`:
   ```c
   typedef enum {
       SENDER_STATE_IDLE,
@@ -453,23 +579,39 @@ FairPlay messages that the receiver will accept.
   void sender_stop(sender_t *s);
   void sender_destroy(sender_t *s);
   ```
-- [ ] Create `airplay_sender/sender.c`:
+- [x] Create `airplay_sender/sender.c`:
   - Coordinate all components
   - Handle connection lifecycle
   - Manage streaming threads
   - Error recovery and cleanup
+- [x] Wire up component callbacks:
+  - Frame capture → video encoder → video packetizer → stream client
+  - Audio capture → audio encoder → RTP audio
+  - NTP client for timestamp conversion
+- [x] Add helper functions for platform code:
+  - `sender_set_video_encoder()` - wires encoder to packetizer
+  - `sender_set_frame_capture()` - wires capture to encoder
+  - `sender_set_audio_encoder()` - wires encoder to RTP
+  - `sender_set_audio_capture()` - wires capture to encoder
+- [x] Initialize RTP audio connection in `sender_start_mirroring()`
+- [x] Add `stream_client_send_raw_video_packet()` for pre-encrypted packets
 
 #### Step 8.2: Window Class Integration
-- [ ] Add `sender_t *sender` instance variable to Window
-- [ ] Add "AirPlay to..." menu items in `rightMouseDown:`
-- [ ] Add "Stop AirPlay" when streaming
-- [ ] Show AirPlay icon/indicator when streaming
-- [ ] Handle sender state callbacks
+- [x] Add `sender_t *sender` instance variable to Window
+- [x] Add "AirPlay Mirror to..." menu items in `rightMouseDown:`
+- [x] Add "Stop AirPlay Mirroring" when streaming
+- [x] Show AirPlay icon/indicator when streaming
+- [x] Handle sender state callbacks
+- [x] Implement `connectToAirPlaySender:` method
+- [x] Implement `stopAirPlayMirroring:` method
+- [x] Add cleanup in window close method
 
 #### Step 8.3: Preferences Integration
-- [ ] Add AirPlay sender enable/disable preference
-- [ ] Add quality presets (low/medium/high)
-- [ ] Add audio enable/disable option
+- [x] Add AirPlay sender enable/disable preference
+- [x] Add quality presets (low/medium/high)
+- [x] Add audio enable/disable option
+- [x] Use preferences to conditionally show sender menu items
+- [x] Add comments for using preferences when creating encoders (platform code)
 
 ---
 

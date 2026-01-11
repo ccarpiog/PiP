@@ -28,6 +28,9 @@ static NSArray* getPrefsArray(void){
     #ifndef NO_AIRPLAY
     OPTION(airplay, "AirPlay Receiver", CheckBox, [NSNull null], @1, @"Use PiP as Airplay receiver"),
     OPTION(airplay_scale_factor, "AirPlay Scale factor", Select, (@[@"1.00", @"2.00", @"3.00", @"Default"]), @3, [NSNull null]),
+    OPTION(airplay_sender, "AirPlay Sender", CheckBox, [NSNull null], @1, @"Enable AirPlay mirroring to other devices"),
+    OPTION(airplay_sender_quality, "Mirroring Quality", Select, (@[@"Low", @"Medium", @"High"]), @1, @"Video quality preset for mirroring"),
+    OPTION(airplay_sender_audio, "Mirror Audio", CheckBox, [NSNull null], @1, @"Include audio when mirroring"),
     #endif
     OPTION(wfilter_null_title, "Exclude windows", CheckBox, [NSNull null], @0, @"when title is null"),
     OPTION(wfilter_epmty_title, "Exclude windows", CheckBox, [NSNull null], @0, @"when title is empty"),
@@ -77,7 +80,7 @@ NSObject* getPrefOption(NSString* key){
   [self setTitle:@"PiP Preferences"];
 
   opts = getPrefsArray();
-  
+
   NSScrollView* scrollView = [[NSScrollView alloc] init];
   scrollView.hasHorizontalScroller = true;
   scrollView.hasVerticalScroller = true;
@@ -91,7 +94,7 @@ NSObject* getPrefOption(NSString* key){
   for(NSInteger attr = NSLayoutAttributeLeft; attr <= NSLayoutAttributeBottom; attr++){
     [rootView addConstraint:[NSLayoutConstraint constraintWithItem:scrollView attribute:attr relatedBy:NSLayoutRelationEqual toItem:rootView attribute:attr multiplier:1 constant:0]];
   }
-  
+
 //  NSDictionary *viewBindings = NSDictionaryOfVariableBindings(rootView,scrollView);
 //  [rootView addConstraints: [NSLayoutConstraint constraintsWithVisualFormat:@"H:|-(0)-[scrollView]-(0)-|" options:0 metrics:nil views:viewBindings]];
 //  [rootView addConstraints: [NSLayoutConstraint constraintsWithVisualFormat:@"V:|-(0)-[scrollView]-(0)-|" options:0 metrics:nil views:viewBindings]];

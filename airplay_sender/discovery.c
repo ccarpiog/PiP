@@ -207,7 +207,14 @@ resolve_reply(void *sdRef, uint32_t flags, uint32_t interfaceIndex,
   MUTEX_LOCK(state->mutex);
 
   node->receiver.port = ntohs(port);
+  // Copy hostname and strip trailing period (DNS root) if present
   strncpy(node->receiver.host, hosttarget, sizeof(node->receiver.host) - 1);
+  node->receiver.host[sizeof(node->receiver.host) - 1] = '\0';
+  // Remove trailing period if present (DNS-SD hostnames often have it)
+  size_t host_len = strlen(node->receiver.host);
+  if (host_len > 0 && node->receiver.host[host_len - 1] == '.') {
+    node->receiver.host[host_len - 1] = '\0';
+  }
   node->resolve_ref = NULL;
 
   uint8_t value_len;

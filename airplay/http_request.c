@@ -253,7 +253,7 @@ http_request_get_data(http_request_t *request, int *datalen)
     return request->data;
 }
 
-int 
+int
 http_request_get_header_string(http_request_t *request, char **header_str)
 {
     if(!request || request->headers_size == 0) {

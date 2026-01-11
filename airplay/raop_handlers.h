@@ -21,6 +21,10 @@
 #include <stdlib.h>
 #include "plist/plist.h"
 
+// Enable key logging for debugging (ekey, eiv, aeskey, ecdh_secret, etc.)
+// Define ENABLE_KEY_LOGGING to enable detailed cryptographic key logging
+// #define ENABLE_KEY_LOGGING
+
 typedef void (*raop_handler_t)(raop_conn_t *, http_request_t *,
                                http_response_t *, char **, int *);
 
@@ -172,24 +176,30 @@ raop_handler_pairsetup(raop_conn_t *conn,
                        char **response_data, int *response_datalen)
 {
     unsigned char public_key[ED25519_KEY_SIZE];
-    //const char *data;
+    const char *data;
     int datalen;
 
-    //data =
+    data =
     http_request_get_data(request, &datalen);
+
     if (datalen != 32) {
-        logger_log(conn->raop->logger, LOGGER_ERR, "Invalid pair-setup data");
+        logger_log(conn->raop->logger, LOGGER_ERR, "Invalid pair-setup data (datalen=%d, expected=32)", datalen);
         return;
     }
 
     pairing_get_public_key(conn->raop->pairing, public_key);
     pairing_session_set_setup_status(conn->pairing);
+    logger_log(conn->raop->logger, LOGGER_ERR, "pair-setup: set status to STATUS_SETUP");
 
     *response_data = malloc(sizeof(public_key));
     if (*response_data) {
         http_response_add_header(response, "Content-Type", "application/octet-stream");
         memcpy(*response_data, public_key, sizeof(public_key));
         *response_datalen = sizeof(public_key);
+        logger_log(conn->raop->logger, LOGGER_ERR, "pair-setup: allocated response_data, datalen=%d",
+                  *response_datalen);
+    } else {
+        logger_log(conn->raop->logger, LOGGER_ERR, "pair-setup: failed to allocate response_data");
     }
 }
 
@@ -198,7 +208,10 @@ raop_handler_pairverify(raop_conn_t *conn,
                         http_request_t *request, http_response_t *response,
                         char **response_data, int *response_datalen)
 {
-    if (pairing_session_check_handshake_status(conn->pairing)) {
+    int handshake_status_check = pairing_session_check_handshake_status(conn->pairing);
+    logger_log(conn->raop->logger, LOGGER_ERR, "pair-verify: handshake_status_check=%d", handshake_status_check);
+    if (handshake_status_check) {
+        logger_log(conn->raop->logger, LOGGER_ERR, "pair-verify: handshake status check failed, returning early");
         return;
     }
     unsigned char public_key[X25519_KEY_SIZE];
@@ -207,25 +220,43 @@ raop_handler_pairverify(raop_conn_t *conn,
     int datalen;
 
     data = (unsigned char *) http_request_get_data(request, &datalen);
+    logger_log(conn->raop->logger, LOGGER_ERR, "pair-verify: received data len=%d", datalen);
     if (datalen < 4) {
-        logger_log(conn->raop->logger, LOGGER_ERR, "Invalid pair-verify data");
+        logger_log(conn->raop->logger, LOGGER_ERR, "Invalid pair-verify data (datalen=%d < 4)", datalen);
         return;
     }
+
+    logger_log(conn->raop->logger, LOGGER_ERR, "pair-verify: data[0]=0x%02x", data[0]);
+    // Debug: log first 16 bytes of data
+    char hex_buf[64];
+    for (int i = 0; i < 16 && i < datalen; i++) {
+        sprintf(hex_buf + i*3, "%02x ", data[i]);
+    }
+    logger_log(conn->raop->logger, LOGGER_ERR, "pair-verify: first 16 bytes: %s", hex_buf);
     switch (data[0]) {
         case 1:
+            logger_log(conn->raop->logger, LOGGER_ERR, "pair-verify: case 1, datalen=%d, expected=%d",
+                      datalen, 4 + X25519_KEY_SIZE + X25519_KEY_SIZE);
             if (datalen != 4 + X25519_KEY_SIZE + X25519_KEY_SIZE) {
-                logger_log(conn->raop->logger, LOGGER_ERR, "Invalid pair-verify data");
+                logger_log(conn->raop->logger, LOGGER_ERR, "Invalid pair-verify data (datalen=%d, expected=%d)",
+                          datalen, 4 + X25519_KEY_SIZE + X25519_KEY_SIZE);
                 return;
             }
             /* We can fall through these errors, the result will just be garbage... */
             if (pairing_session_handshake(conn->pairing, data + 4, data + 4 + X25519_KEY_SIZE)) {
                 logger_log(conn->raop->logger, LOGGER_ERR, "Error initializing pair-verify handshake");
+            } else {
+                logger_log(conn->raop->logger, LOGGER_ERR, "pair-verify: handshake initialized successfully");
             }
             if (pairing_session_get_public_key(conn->pairing, public_key)) {
                 logger_log(conn->raop->logger, LOGGER_ERR, "Error getting ECDH public key");
+            } else {
+                logger_log(conn->raop->logger, LOGGER_ERR, "pair-verify: got ECDH public key");
             }
             if (pairing_session_get_signature(conn->pairing, signature)) {
                 logger_log(conn->raop->logger, LOGGER_ERR, "Error getting ED25519 signature");
+            } else {
+                logger_log(conn->raop->logger, LOGGER_ERR, "pair-verify: got ED25519 signature");
             }
             *response_data = malloc(sizeof(public_key) + sizeof(signature));
             if (*response_data) {
@@ -233,6 +264,10 @@ raop_handler_pairverify(raop_conn_t *conn,
                 memcpy(*response_data, public_key, sizeof(public_key));
                 memcpy(*response_data + sizeof(public_key), signature, sizeof(signature));
                 *response_datalen = sizeof(public_key) + sizeof(signature);
+                logger_log(conn->raop->logger, LOGGER_ERR, "pair-verify: allocated response_data, datalen=%d",
+                          *response_datalen);
+            } else {
+                logger_log(conn->raop->logger, LOGGER_ERR, "pair-verify: failed to allocate response_data");
             }
             break;
         case 0:
@@ -247,7 +282,7 @@ raop_handler_pairverify(raop_conn_t *conn,
                 http_response_set_disconnect(response, 1);
                 return;
             }
-            logger_log(conn->raop->logger, LOGGER_DEBUG, "pair-verify: signature is verified");	    
+            logger_log(conn->raop->logger, LOGGER_DEBUG, "pair-verify: signature is verified");
             http_response_add_header(response, "Content-Type", "application/octet-stream");
             break;
     }
@@ -340,7 +375,7 @@ raop_handler_setup(raop_conn_t *conn,
     plist_from_bin(data, data_len, &req_root_node);
     plist_t req_ekey_node = plist_dict_get_item(req_root_node, "ekey");
     plist_t req_eiv_node = plist_dict_get_item(req_root_node, "eiv");
-	
+
     // For the response
     plist_t res_root_node = plist_new_dict();
 
@@ -357,6 +392,7 @@ raop_handler_setup(raop_conn_t *conn,
         uint64_t eiv_len = 0;
         plist_get_data_val(req_eiv_node, &eiv, &eiv_len);
         memcpy(aesiv, eiv, 16);
+
         logger_log(conn->raop->logger, LOGGER_DEBUG, "eiv_len = %llu", eiv_len);
         char* str = utils_data_to_string(aesiv, 16, 16);
         logger_log(conn->raop->logger, LOGGER_DEBUG, "16 byte aesiv (needed for AES-CBC audio decryption iv):\n%s", str);
@@ -371,11 +407,52 @@ raop_handler_setup(raop_conn_t *conn,
         logger_log(conn->raop->logger, LOGGER_DEBUG, "ekey:\n%s", str);
         free (str);
 
+        #ifdef ENABLE_KEY_LOGGING
+        // Log ekey as C array for easy copy-paste
+        if (ekey_len == 72) {
+            char ekey_c_array[512];
+            snprintf(ekey_c_array, sizeof(ekey_c_array), "ekey C array: {");
+            for (uint64_t i = 0; i < ekey_len; i++) {
+                char hex[8];
+                snprintf(hex, sizeof(hex), "0x%02x%s", (unsigned char)ekey[i], (i < ekey_len - 1) ? ", " : "");
+                strncat(ekey_c_array, hex, sizeof(ekey_c_array) - strlen(ekey_c_array) - 1);
+                if ((i + 1) % 16 == 0 && i < ekey_len - 1) {
+                    strncat(ekey_c_array, "\n  ", sizeof(ekey_c_array) - strlen(ekey_c_array) - 1);
+                }
+            }
+            strncat(ekey_c_array, "}", sizeof(ekey_c_array) - strlen(ekey_c_array) - 1);
+            logger_log(conn->raop->logger, LOGGER_DEBUG, "%s", ekey_c_array);
+
+            // Log ekey chunks separately for analysis
+            logger_log(conn->raop->logger, LOGGER_DEBUG, "ekey chunk1 (bytes 16-31):");
+            str = utils_data_to_string((unsigned char *) &ekey[16], 16, 16);
+            logger_log(conn->raop->logger, LOGGER_DEBUG, "%s", str);
+            free(str);
+            logger_log(conn->raop->logger, LOGGER_DEBUG, "ekey chunk2 (bytes 56-71):");
+            str = utils_data_to_string((unsigned char *) &ekey[56], 16, 16);
+            logger_log(conn->raop->logger, LOGGER_DEBUG, "%s", str);
+            free(str);
+        }
+#endif
+
         int ret = fairplay_decrypt(conn->fairplay, (unsigned char*) ekey, aeskey);
         logger_log(conn->raop->logger, LOGGER_DEBUG, "fairplay_decrypt ret = %d", ret);
         str = utils_data_to_string(aeskey, 16, 16);
         logger_log(conn->raop->logger, LOGGER_DEBUG, "16 byte aeskey (fairplay-decrypted from ekey):\n%s", str);
         free(str);
+
+#ifdef ENABLE_KEY_LOGGING
+        // Log aeskey as C array
+        char aeskey_c_array[128];
+        snprintf(aeskey_c_array, sizeof(aeskey_c_array), "aeskey C array: {");
+        for (int i = 0; i < 16; i++) {
+            char hex[8];
+            snprintf(hex, sizeof(hex), "0x%02x%s", aeskey[i], (i < 15) ? ", " : "");
+            strncat(aeskey_c_array, hex, sizeof(aeskey_c_array) - strlen(aeskey_c_array) - 1);
+        }
+        strncat(aeskey_c_array, "}", sizeof(aeskey_c_array) - strlen(aeskey_c_array) - 1);
+        logger_log(conn->raop->logger, LOGGER_DEBUG, "%s", aeskey_c_array);
+#endif
 
         unsigned char ecdh_secret[X25519_KEY_SIZE];
         pairing_get_ecdh_secret_key(conn->pairing, ecdh_secret);
@@ -384,7 +461,7 @@ raop_handler_setup(raop_conn_t *conn,
         free(str);
 
         const char *user_agent = http_request_get_header(request, "User-Agent");
-        logger_log(conn->raop->logger, LOGGER_INFO, "Client identified as User-Agent: %s", user_agent);	
+        logger_log(conn->raop->logger, LOGGER_INFO, "Client identified as User-Agent: %s", user_agent);
 
         bool old_protocol = false;
 #ifdef OLD_PROTOCOL_CLIENT_USER_AGENT_LIST    /* set in global.h */
@@ -457,7 +534,9 @@ raop_handler_setup(raop_conn_t *conn,
 
                     if (conn->raop_rtp_mirror) {
                         raop_rtp_init_mirror_aes(conn->raop_rtp_mirror, &stream_connection_id);
+                        logger_log(conn->raop->logger, LOGGER_DEBUG, "Before raop_rtp_start_mirror: dport=%d", dport);
                         raop_rtp_start_mirror(conn->raop_rtp_mirror, use_udp, &dport, conn->raop->clientFPSdata);
+                        logger_log(conn->raop->logger, LOGGER_DEBUG, "After raop_rtp_start_mirror: dport=%d", dport);
                         logger_log(conn->raop->logger, LOGGER_DEBUG, "Mirroring initialized successfully");
                     } else {
                         logger_log(conn->raop->logger, LOGGER_ERR, "Mirroring not initialized at SETUP, playing will fail!");
@@ -466,6 +545,7 @@ raop_handler_setup(raop_conn_t *conn,
 
                     plist_t res_stream_node = plist_new_dict();
                     plist_t res_stream_data_port_node = plist_new_uint(dport);
+                    logger_log(conn->raop->logger, LOGGER_DEBUG, "Sending response with dataPort=%d", dport);
                     plist_t res_stream_type_node = plist_new_uint(110);
                     plist_dict_set_item(res_stream_node, "dataPort", res_stream_data_port_node);
                     plist_dict_set_item(res_stream_node, "type", res_stream_type_node);
@@ -474,7 +554,7 @@ raop_handler_setup(raop_conn_t *conn,
                     break;
                 } case 96: {
                     // Audio
-                    unsigned short cport = conn->raop->control_lport, dport = conn->raop->data_lport; 
+                    unsigned short cport = conn->raop->control_lport, dport = conn->raop->data_lport;
                     unsigned short remote_cport = 0;
                     uint64_t uint_val = 0;
                     plist_t req_stream_control_port_node = plist_dict_get_item(req_stream_node, "controlPort");

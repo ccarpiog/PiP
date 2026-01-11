@@ -258,13 +258,12 @@ void airplay_receiver_start(void){
   raop_set_udp_ports(raop, ports);
 
   raop_set_log_callback(raop, log_callback, NULL);
-  raop_set_log_level(raop, LOGGER_INFO);
-//  raop_set_log_level(raop, RAOP_LOG_DEBUG);
+  raop_set_log_level(raop, LOGGER_DEBUG);  // Enable DEBUG for capturing ekey/eiv from real devices
 
   unsigned short port = raop_get_port(raop);
   raop_start(raop, &port);
   raop_set_port(raop, port);
-  
+
   NSLog(@"raop listening on %u", port);
 
   int error;

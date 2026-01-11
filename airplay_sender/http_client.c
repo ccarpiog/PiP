@@ -24,6 +24,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 #else
@@ -303,6 +304,12 @@ connected:
     setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout));
     setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, (char *)&timeout, sizeof(timeout));
 
+    // Disable Nagle's algorithm (TCP_NODELAY) to ensure requests are sent immediately
+    // This prevents TCP from batching small requests, which can cause the parser
+    // to receive headers and body in separate packets, triggering the \r\n bug
+    int flag = 1;
+    setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, (char *)&flag, sizeof(flag));
+
     freeaddrinfo(result);
     return sockfd;
   }
@@ -382,18 +389,22 @@ http_client_request(http_client_t *client, const char *method, const char *path,
     }
   }
 
-  // Use HTTP/1.1 in request (llhttp parser expects HTTP, not RTSP)
-  // But include CSeq header which is required for RTSP/AirPlay
-  // HTTP/1.1 requires Host header
+  // AirPlay uses RTSP/1.0 for requests (matching real Apple devices)
+  // Include CSeq header which is required for RTSP/AirPlay
   static int cseq_counter = 1;
   int cseq = cseq_counter++;
 
   request_len = snprintf(request, sizeof(request),
-                         "%s %s HTTP/1.1\r\n"
+                         "%s %s RTSP/1.0\r\n"
                          "Host: %s:%u\r\n"
                          "CSeq: %d\r\n"
                          "User-Agent: AirPlay/320.20\r\n",
                          method, path, client->host, client->port, cseq);
+
+  // Ensure we don't exceed buffer
+  if (request_len >= sizeof(request) - 1) {
+    return NULL;
+  }
 
   if (headers) {
     int headers_len = strlen(headers);
@@ -413,13 +424,41 @@ http_client_request(http_client_t *client, const char *method, const char *path,
     }
   }
 
-  // RTSP/HTTP requests must end with \r\n\r\n (empty line)
-  if (request_len + 4 < sizeof(request)) {
-    memcpy(request + request_len, "\r\n\r\n", 4);
-    request_len += 4;
+  // RTSP/HTTP requests must end with \r\n (empty line) before body
+  // Check if the last character is already \n (from a header ending with \r\n)
+  // If so, we only need to add \r\n (one more line break)
+  // If not, we need to add \r\n\r\n (two line breaks)
+  if (request_len > 0 && request[request_len - 1] == '\n') {
+    // Last character is \n, so we already have \r\n from last header
+    // Just add \r\n for the empty line
+    if (request_len + 2 < sizeof(request)) {
+      memcpy(request + request_len, "\r\n", 2);
+      request_len += 2;
+    } else {
+      return NULL;
+    }
   } else {
-    return NULL;
+    // Last character is not \n, add \r\n\r\n (empty line)
+    if (request_len + 4 < sizeof(request)) {
+      memcpy(request + request_len, "\r\n\r\n", 4);
+      request_len += 4;
+    } else {
+      return NULL;
+    }
   }
+
+  // Append body data after the empty line
+  if (body && body_len > 0) {
+    if (request_len + body_len < sizeof(request)) {
+      memcpy(request + request_len, body, body_len);
+      request_len += body_len;
+    } else {
+      return NULL;
+    }
+  }
+
+  // Ensure request is null-terminated for debugging (but don't include null in send)
+  request[request_len] = '\0';
 
   // Debug: log the request being sent
   fprintf(stderr, "http_client: sending request (%d bytes):\n%.*s\n", request_len, request_len, request);
@@ -437,17 +476,10 @@ http_client_request(http_client_t *client, const char *method, const char *path,
 
   fprintf(stderr, "http_client: sent %d bytes\n", sent);
 
-  if (body && body_len > 0) {
-    sent = 0;
-    while (sent < body_len) {
-      ret = send(client->socket_fd, body + sent, body_len - sent, 0);
-      if (ret == -1) {
-        http_client_disconnect(client);
-        return NULL;
-      }
-      sent += ret;
-    }
-  }
+  // Note: Body is already included in the request buffer above (lines 437-444),
+  // so we don't need to send it again. The duplicate send below was a bug.
+  // Real Apple devices send everything in one packet, which is why they don't
+  // trigger the parser's \r\n bug. We've added TCP_NODELAY to ensure the same behavior.
 
   // Initialize parser structure - don't use memset as it might interfere with parser internals
   resp_parser.status_code = 0;
@@ -469,18 +501,286 @@ http_client_request(http_client_t *client, const char *method, const char *path,
   llhttp_init(&resp_parser.parser, HTTP_RESPONSE, &resp_parser.parser_settings);
   resp_parser.parser.data = &resp_parser;
 
+  int retry_count = 0;
+  const int MAX_RETRIES = 15;  // Retry up to 15 times when waiting for body (receiver may take ~11 seconds due to conn_init blocking)
+  int consecutive_timeouts = 0;  // Track consecutive timeouts to detect connection issues
+
   while (!resp_parser.complete) {
     char *parse_buffer;
+    fd_set read_fds;
+    struct timeval timeout;
+    int select_ret;
 
-    received = recv(client->socket_fd, buffer, sizeof(buffer), 0);
-    if (received <= 0) {
-      if (received == 0) {
-        fprintf(stderr, "http_client: connection closed by peer\n");
+    // Use select() to wait for data to be available
+    // This handles both blocking and non-blocking sockets correctly
+    // For responses that need EOF (no Content-Length), use a shorter timeout
+    // to check more frequently if data is available
+    FD_ZERO(&read_fds);
+    FD_SET(client->socket_fd, &read_fds);
+
+    // Use much shorter timeout when we've already received headers - response should come quickly
+    // Use full timeout only for initial wait before headers are received
+    llhttp_errno_t parser_err_check = llhttp_get_errno(&resp_parser.parser);
+    int needs_eof_check = llhttp_message_needs_eof(&resp_parser.parser);
+    if (parser_err_check == HPE_OK && resp_parser.headers != NULL) {
+      // Headers received - use very short timeout (response body or EOF should come immediately)
+      // This helps detect EOF quickly when receiver disconnects
+      timeout.tv_sec = 0;  // 0 seconds - check immediately
+      timeout.tv_usec = 50000;  // 50ms timeout when headers are already received
+      fprintf(stderr, "http_client: headers received, using 50ms timeout to check for EOF\n");
+    } else {
+      // No headers yet - use shorter timeout for initial wait (response should come quickly)
+      // If receiver disconnects immediately, we want to detect it fast
+      timeout.tv_sec = 1;  // 1 second instead of 10 - response should come immediately
+      timeout.tv_usec = 0;
+      fprintf(stderr, "http_client: no headers yet, using 1 second timeout\n");
+    }
+
+    fprintf(stderr, "http_client: calling select() (has_headers=%d, body_len=%d, complete=%d)\n",
+            resp_parser.headers != NULL, resp_parser.body_len, resp_parser.complete);
+    select_ret = select(client->socket_fd + 1, &read_fds, NULL, NULL, &timeout);
+    fprintf(stderr, "http_client: select() returned %d\n", select_ret);
+    if (select_ret <= 0) {
+      if (select_ret == 0) {
+        consecutive_timeouts++;
+        // After a timeout with no headers, check if data is available (select() might miss it)
+        // This helps catch responses that arrive but select() doesn't detect
+        if (resp_parser.headers == NULL) {
+          int flags = fcntl(client->socket_fd, F_GETFL, 0);
+          if (flags != -1) {
+            fcntl(client->socket_fd, F_SETFL, flags | O_NONBLOCK);
+            char eof_check[1];
+            int eof_ret = recv(client->socket_fd, eof_check, 1, MSG_PEEK);
+            fcntl(client->socket_fd, F_SETFL, flags & ~O_NONBLOCK);
+            if (eof_ret == 0) {
+              // Connection closed before we received response
+              fprintf(stderr, "http_client: connection closed before receiving response\n");
+              http_client_disconnect(client);
+              return NULL;
+            } else if (eof_ret > 0) {
+              // Data is available but select() didn't detect it - try reading immediately
+              fprintf(stderr, "http_client: data available but select() timed out, reading immediately\n");
+              consecutive_timeouts = 0;
+              // Fall through to read the data
+              goto read_data;
+            } else if (consecutive_timeouts > 2) {
+              fprintf(stderr, "http_client: multiple timeouts with no headers and no data available\n");
+            }
+          }
+        }
+        // Timeout - check if connection is closed by trying a non-blocking recv
+        // When receiver disconnects, we should detect EOF immediately
+        if (resp_parser.headers != NULL) {
+          int flags = fcntl(client->socket_fd, F_GETFL, 0);
+          if (flags != -1) {
+            fcntl(client->socket_fd, F_SETFL, flags | O_NONBLOCK);
+            char eof_check[1];
+            int eof_ret = recv(client->socket_fd, eof_check, 1, MSG_PEEK);
+            fcntl(client->socket_fd, F_SETFL, flags & ~O_NONBLOCK);
+            if (eof_ret == 0) {
+              // Connection closed - signal EOF immediately
+              fprintf(stderr, "http_client: connection closed (EOF detected), signaling EOF\n");
+              llhttp_errno_t finish_ret = llhttp_finish(&resp_parser.parser);
+              if (finish_ret == HPE_OK && resp_parser.complete) {
+                break;
+              }
+            }
+          }
+        }
+        // Timeout - no more data available
+        llhttp_errno_t parser_err = llhttp_get_errno(&resp_parser.parser);
+        int needs_eof = llhttp_message_needs_eof(&resp_parser.parser);
+
+        // Debug: log received headers
+        if (resp_parser.headers) {
+          fprintf(stderr, "http_client: received headers: %s\n", resp_parser.headers);
+        }
+
+        // If parser needs EOF and we have headers but no body, keep trying to read
+        // The body might be coming in a separate TCP packet
+        if (parser_err == HPE_OK && needs_eof && resp_parser.body_len == 0 && !resp_parser.complete) {
+          // Check if we've received headers and status code - if so, response might be complete
+          int parser_status = resp_parser.parser.status_code;
+          if (parser_status > 0 && resp_parser.headers && retry_count == 0) {
+            // We have headers and status code, but no body after first timeout
+            // For 200 OK responses with no Content-Length, this likely means no body
+            // Try non-blocking recv() once to check, then signal EOF if nothing available
+            fprintf(stderr, "http_client: headers received, status=%d, checking for body in buffer\n", parser_status);
+            int flags = fcntl(client->socket_fd, F_GETFL, 0);
+            if (flags != -1) {
+              fcntl(client->socket_fd, F_SETFL, flags | O_NONBLOCK);
+              int quick_check = recv(client->socket_fd, buffer, sizeof(buffer), 0);
+              fcntl(client->socket_fd, F_SETFL, flags & ~O_NONBLOCK);
+
+              if (quick_check <= 0) {
+                // No body data available - response is likely complete (no body)
+                fprintf(stderr, "http_client: no body data available, signaling EOF\n");
+                llhttp_errno_t finish_ret = llhttp_finish(&resp_parser.parser);
+                if (finish_ret == HPE_OK && resp_parser.complete) {
+                  retry_count = 0;
+                  break;
+                }
+              } else if (quick_check > 0) {
+                // Body data found! Parse it and continue
+                char *parse_buffer = malloc(quick_check);
+                if (parse_buffer) {
+                  memcpy(parse_buffer, buffer, quick_check);
+                  llhttp_errno_t ret = llhttp_execute(&resp_parser.parser, parse_buffer, quick_check);
+                  free(parse_buffer);
+                  if (ret == 0 && resp_parser.complete) {
+                    retry_count = 0;
+                    break;
+                  }
+                }
+                continue;  // Continue to read more
+              }
+            }
+          }
+
+          // Retry reading a few more times - the body might arrive shortly
+          if (retry_count < MAX_RETRIES) {
+            retry_count++;
+            fprintf(stderr, "http_client: timeout waiting for body, retry %d/%d\n", retry_count, MAX_RETRIES);
+            // Use a shorter timeout for retries
+            continue;  // Continue the loop to try reading again (timeout will be shorter)
+          }
+          // After max retries, try non-blocking recv() one more time
+          retry_count = 0;  // Reset for next request
+
+        // Before timing out, try one more non-blocking recv() to see if body is already in buffer
+        // The body might be in the TCP receive buffer even though select() timed out
+        // Set socket to non-blocking temporarily
+        fprintf(stderr, "http_client: trying non-blocking recv() to check for body in buffer\n");
+        int flags = fcntl(client->socket_fd, F_GETFL, 0);
+        if (flags != -1) {
+          fcntl(client->socket_fd, F_SETFL, flags | O_NONBLOCK);
+          int nonblock_ret = recv(client->socket_fd, buffer, sizeof(buffer), 0);
+          fcntl(client->socket_fd, F_SETFL, flags & ~O_NONBLOCK); // Restore blocking mode
+
+          fprintf(stderr, "http_client: non-blocking recv() returned %d (errno=%d: %s)\n",
+                  nonblock_ret, errno, (nonblock_ret < 0) ? strerror(errno) : "success");
+
+          if (nonblock_ret > 0) {
+            // Body data is available! Parse it
+            fprintf(stderr, "http_client: found %d bytes of body data in buffer after timeout\n", nonblock_ret);
+            char *parse_buffer = malloc(nonblock_ret);
+            if (parse_buffer) {
+              memcpy(parse_buffer, buffer, nonblock_ret);
+              llhttp_errno_t ret = llhttp_execute(&resp_parser.parser, parse_buffer, nonblock_ret);
+              free(parse_buffer);
+              fprintf(stderr, "http_client: parsed body data, ret=%d, complete=%d\n", ret, resp_parser.complete);
+              if (ret == 0 && resp_parser.complete) {
+                // Message is now complete
+                retry_count = 0;  // Reset retry count
+                break;
+              }
+            }
+            // Continue loop to read more if needed
+            retry_count = 0;  // Reset retry count on successful read
+            continue;
+          } else if (nonblock_ret == 0) {
+            // Connection closed - signal EOF
+            fprintf(stderr, "http_client: connection closed, calling llhttp_finish\n");
+            llhttp_errno_t finish_ret = llhttp_finish(&resp_parser.parser);
+            if (finish_ret == HPE_OK && resp_parser.complete) {
+              break;
+            }
+          } else {
+            // EAGAIN/EWOULDBLOCK - no data available
+            fprintf(stderr, "http_client: no body data in buffer (errno=%d: %s)\n", errno, strerror(errno));
+          }
+        }
+
+        // If we still don't have a body and needs_eof=1, the response might be complete (no body)
+        // But for 200 OK responses, we expect a body. If we've exhausted retries, signal EOF
+        if (parser_err == HPE_OK && needs_eof && resp_parser.body_len == 0 && !resp_parser.complete) {
+          // Get status code to check if this should have a body
+          int status_check = resp_parser.parser.status_code;
+          if (status_check == 200) {
+            // 200 OK should have a body, but we haven't received it
+            // This is likely a receiver-side issue, but try signaling EOF anyway
+            fprintf(stderr, "http_client: 200 OK response has no body, signaling EOF\n");
+            llhttp_errno_t finish_ret = llhttp_finish(&resp_parser.parser);
+            if (finish_ret == HPE_OK && resp_parser.complete) {
+              break;
+            }
+          }
+        }
+
+      // Get status code from parser (it's available even before message is complete)
+      // Note: llhttp_get_status_code might not be available, use parser.status_code directly
+      int parser_status_code = resp_parser.parser.status_code;
+      if (parser_status_code > 0 && resp_parser.status_code == 0) {
+        resp_parser.status_code = parser_status_code;
+      }
+
+        // Check if this is a response that should have no body
+        // For pair-verify, we expect a body, so don't finish yet
+        // Only finish if status code indicates no body (204, 304, etc.)
+        int status_to_check = (resp_parser.status_code > 0) ? resp_parser.status_code : parser_status;
+        if (status_to_check == 204 || status_to_check == 304 ||
+            (status_to_check >= 100 && status_to_check < 200)) {
+          // Response should have no body - signal EOF to complete the message
+          llhttp_errno_t finish_ret = llhttp_finish(&resp_parser.parser);
+          fprintf(stderr, "http_client: timeout, calling llhttp_finish (status=%d, needs_eof=1, no body), ret=%d, complete=%d\n",
+                  status_to_check, finish_ret, resp_parser.complete);
+          if (finish_ret == HPE_OK && resp_parser.complete) {
+            // Message is now complete
+            break;
+          }
+        } else {
+          // Response should have a body but we haven't received it
+          // This is an error - the body should have arrived
+          fprintf(stderr, "http_client: timeout waiting for response body (status=%d, needs_eof=1)\n",
+                  status_to_check);
+        }
+        }
+        fprintf(stderr, "http_client: timeout waiting for response data\n");
       } else {
-        fprintf(stderr, "http_client: recv error: %s\n", strerror(errno));
+        fprintf(stderr, "http_client: select error: %s\n", strerror(errno));
       }
       http_client_disconnect(client);
       return NULL;
+    }
+
+    if (!FD_ISSET(client->socket_fd, &read_fds)) {
+      fprintf(stderr, "http_client: socket not ready for reading\n");
+      http_client_disconnect(client);
+      return NULL;
+    }
+
+read_data:
+    // Reset consecutive timeouts when we successfully read
+    consecutive_timeouts = 0;
+
+    // Read data - if recv() returns 0, that's EOF (connection closed)
+    received = recv(client->socket_fd, buffer, sizeof(buffer), 0);
+    if (received <= 0) {
+      if (received == 0) {
+        // Connection closed - finish parsing to get any response that was already received
+        fprintf(stderr, "http_client: connection closed by peer (EOF), finishing parser\n");
+        llhttp_errno_t finish_ret = llhttp_finish(&resp_parser.parser);
+        if (finish_ret == HPE_OK && resp_parser.complete) {
+          // Response is complete, break out of loop to process it
+          break;
+        } else {
+          // Response incomplete, but connection is closed - this is an error
+          fprintf(stderr, "http_client: connection closed but response incomplete (finish_ret=%d, complete=%d)\n",
+                  finish_ret, resp_parser.complete);
+          http_client_disconnect(client);
+          return NULL;
+        }
+      } else {
+        // Check if it's a temporary error that we should retry
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+          // This shouldn't happen if socket is blocking, but retry once
+          fprintf(stderr, "http_client: recv would block, retrying...\n");
+          continue;
+        }
+        fprintf(stderr, "http_client: recv error: %s\n", strerror(errno));
+        http_client_disconnect(client);
+        return NULL;
+      }
     }
 
     fprintf(stderr, "http_client: received %d bytes of response\n", received);
@@ -526,6 +826,62 @@ http_client_request(http_client_t *client, const char *method, const char *path,
       fprintf(stderr, "http_client: parser error: %d\n", ret);
       http_client_disconnect(client);
       return NULL;
+    }
+
+    // Debug: check parser state after parsing
+    if (!resp_parser.complete) {
+      llhttp_errno_t parser_err = llhttp_get_errno(&resp_parser.parser);
+      int needs_eof = llhttp_message_needs_eof(&resp_parser.parser);
+      // Get status code from parser (it's set after status line is parsed)
+      // Access parser.status_code directly since llhttp_get_status_code might not be available
+      int parser_status = resp_parser.parser.status_code;
+      fprintf(stderr, "http_client: message not complete yet, parser_err=%d, needs_eof=%d, "
+              "content_length=%llu, body_len=%d, parser_status=%d\n", parser_err, needs_eof,
+              (unsigned long long)resp_parser.parser.content_length, resp_parser.body_len, parser_status);
+
+      // Update status code if parser has it (even if message isn't complete yet)
+      if (parser_status > 0 && resp_parser.status_code == 0) {
+        resp_parser.status_code = parser_status;
+      }
+
+      // If we have headers but no body, check for EOF immediately (receiver might have disconnected)
+      if (parser_err == HPE_OK && needs_eof && resp_parser.body_len == 0 && resp_parser.headers != NULL) {
+        // Check if connection is closed right after receiving headers
+        int flags = fcntl(client->socket_fd, F_GETFL, 0);
+        if (flags != -1) {
+          fcntl(client->socket_fd, F_SETFL, flags | O_NONBLOCK);
+          char eof_check[1];
+          int eof_ret = recv(client->socket_fd, eof_check, 1, MSG_PEEK);
+          fcntl(client->socket_fd, F_SETFL, flags & ~O_NONBLOCK);
+          if (eof_ret == 0) {
+            // Connection closed - finish parsing to get the response
+            fprintf(stderr, "http_client: connection closed after headers (EOF detected), finishing parser\n");
+            llhttp_errno_t finish_ret = llhttp_finish(&resp_parser.parser);
+            if (finish_ret == HPE_OK && resp_parser.complete) {
+              break;
+            }
+          }
+        }
+        // Response might be complete (no body), but we can't be sure until we try to read more
+        // Continue the loop - if select() times out, we'll handle it there
+      }
+
+      // If parser is in valid state and doesn't need EOF, check if we've received all data
+      if (parser_err == HPE_OK && !needs_eof) {
+        // Check if content_length is 0 or we've received all expected data
+        if (resp_parser.parser.content_length == 0 ||
+            (resp_parser.parser.content_length > 0 &&
+             resp_parser.body_len >= (int)resp_parser.parser.content_length)) {
+          // Message should be complete, try calling finish
+          llhttp_errno_t finish_ret = llhttp_finish(&resp_parser.parser);
+          fprintf(stderr, "http_client: called llhttp_finish (content_length match), ret=%d, complete=%d\n",
+                  finish_ret, resp_parser.complete);
+          if (finish_ret == HPE_OK && resp_parser.complete) {
+            // Message is now complete
+            break;
+          }
+        }
+      }
     }
   }
 

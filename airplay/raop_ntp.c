@@ -143,7 +143,7 @@ raop_ntp_t *raop_ntp_init(raop_connection_t* conn, logger_t *logger, raop_callba
     }
     raop_ntp->conn = conn;
     raop_ntp->logger = logger;
-    memcpy(&raop_ntp->callbacks, callbacks, sizeof(raop_callbacks_t));    
+    memcpy(&raop_ntp->callbacks, callbacks, sizeof(raop_callbacks_t));
     raop_ntp->timing_rport = timing_rport;
 
     if (raop_ntp_parse_remote_address(raop_ntp, remote_addr, remote_addr_len) < 0) {
@@ -257,7 +257,7 @@ raop_ntp_thread(void *arg)
     const unsigned  two_pow_n[RAOP_NTP_DATA_COUNT] = {2, 4, 8, 16, 32, 64, 128, 256};
     int timeout_counter = 0;
     bool conn_reset = false;
-      
+
     while (1) {
         MUTEX_LOCK(raop_ntp->run_mutex);
         if (!raop_ntp->running) {
@@ -268,6 +268,21 @@ raop_ntp_thread(void *arg)
 
         // Flush the socket in case a super delayed response arrived or something
         raop_ntp_flush_socket(raop_ntp->tsock);
+
+        // Only send requests if we have a valid remote timing port
+        // If timing_rport is 0, the client hasn't provided it yet (first SETUP)
+        if (raop_ntp->timing_rport == 0) {
+            // Sleep and wait for client to provide timing port
+            struct timeval now;
+            struct timespec wait_time;
+            MUTEX_LOCK(raop_ntp->wait_mutex);
+            gettimeofday(&now, NULL);
+            wait_time.tv_sec = now.tv_sec + 1;
+            wait_time.tv_nsec = now.tv_usec * 1000;
+            pthread_cond_timedwait(&raop_ntp->wait_cond, &raop_ntp->wait_mutex, &wait_time);
+            MUTEX_UNLOCK(raop_ntp->wait_mutex);
+            continue;
+        }
 
         // Send request
         uint64_t send_time = raop_ntp_get_local_time(raop_ntp);
@@ -397,7 +412,7 @@ raop_ntp_start(raop_ntp_t *raop_ntp, unsigned short *timing_lport, int max_ntp_t
     /* Create the thread and initialize running values */
     raop_ntp->running = 1;
     raop_ntp->joined = 0;
-    
+
     THREAD_CREATE(raop_ntp->thread, raop_ntp_thread, raop_ntp);
     MUTEX_UNLOCK(raop_ntp->run_mutex);
 }
