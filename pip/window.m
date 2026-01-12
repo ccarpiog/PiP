@@ -46,6 +46,7 @@ INC_IMG(display);
 INC_IMG(windows);
 INC_IMG(hls);
 INC_IMG(airplay);
+INC_IMG(airplay_stop);
 
 #define DEFAULT_TITLE @"(right click to begin)"
 
@@ -1205,8 +1206,8 @@ static NSImage* get_rel_image(NSImage* img){
         })
       }
     } else {
-      // Mirroring active - show "Stop AirPlay Mirroring" option
-      ADD_MENU_ITEM(theMenu, @"Stop AirPlay Mirroring", @selector(stopAirPlayMirroring:), GET_REL_IMG(stop))
+      NSString *mirroringTitle = [NSString stringWithFormat:@"Stop Mirroring to %@", connectedSenderReceiver.name];
+      ADD_MENU_ITEM(theMenu, mirroringTitle, @selector(stopAirPlayMirroring:), GET_REL_IMG(airplay_stop))
     }
   }
 #endif
@@ -1223,16 +1224,6 @@ end:
       [item setRepresentedObject:[WindowSel getDefault]];
     })
   }
-
-#ifndef NO_AIRPLAY
-  // Show AirPlay indicator when sending
-  if (is_airplay_sending && connectedSenderReceiver) {
-    NSString *mirroringTitle = [NSString stringWithFormat:@"🔵 Mirroring to %@", connectedSenderReceiver.name];
-    ADD_MENU_ITEM(theMenu, mirroringTitle, nil, GET_REL_IMG(airplay), {
-      [item setEnabled:NO];
-    })
-  }
-#endif
 
   if(!pvc){
     NSSlider* slider = [[NSSlider alloc] init];

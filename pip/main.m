@@ -62,6 +62,17 @@ item.keyEquivalentModifierMask = mask; \
   ADD_ITEM(@"Click Through", clickThrough:, @"c");
   ADD_ITEM(@"Close", performClose:, @"w");
 
+  INIT_MENU(@"Edit");
+  ADD_ITEM(@"Undo", undo, @"z");
+  ADD_ITEM(@"Redo", redo, @"Z");
+  ADD_SEP();
+  ADD_ITEM(@"Cut", cut:, @"x");
+  ADD_ITEM(@"Copy", copy:, @"c");
+  ADD_ITEM(@"Paste", paste:, @"v");
+  ADD_SEP();
+  ADD_ITEM(@"Delete", delete:, @"");
+  ADD_ITEM(@"Select All", selectAll:, @"a");
+
   INIT_MENU(@"Window");
   ADD_SCALE_ITEM(1);
   ADD_SCALE_ITEM(2);
