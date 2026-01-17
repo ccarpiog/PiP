@@ -436,6 +436,7 @@ static NSImage* get_rel_image(NSImage* img){
   NSTextField* hlsInputField;
   NSButton* hlsLoadButton;
   NSButton* hlsCancelButton;
+  NSString* lastSuccessfulHLSURL;
 
   NSTimer* mouse_timer;
   bool mouse_timer_rerun;
@@ -1679,7 +1680,7 @@ end:
 
   // Create text field
   hlsInputField = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 50, contentWidth, 22)];
-  [hlsInputField setStringValue:@""];
+  [hlsInputField setStringValue:lastSuccessfulHLSURL ?: @""];
   [hlsInputField setEditable:YES];
   [hlsInputField setSelectable:YES];
   [hlsInputField setBezeled:YES];
@@ -1786,6 +1787,8 @@ end:
   }
 
   if(url) {
+    // Retain the successfully parsed input string
+    lastSuccessfulHLSURL = inputString;
     [self dismissHLSInputView];
     [self loadHLSURL:url withHeaders:headers];
   } else {
