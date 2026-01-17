@@ -131,7 +131,22 @@
 		55E7C039246D441300BE7DD9 /* imageView.m in Sources */ = {isa = PBXBuildFile; fileRef = 55E7C038246D441300BE7DD9 /* imageView.m */; };
 		55E7C03C246D4AC000BE7DD9 /* metalRenderer.m in Sources */ = {isa = PBXBuildFile; fileRef = 55E7C03B246D4AC000BE7DD9 /* metalRenderer.m */; };
 		55E7C03E246D4E6900BE7DD9 /* openGLRenderer.m in Sources */ = {isa = PBXBuildFile; fileRef = 55E7C03D246D4E6900BE7DD9 /* openGLRenderer.m */; };
+		55EB109A2F1B0FE30029B5B4 /* ScreenCaptureKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 55EB10992F1B0FE30029B5B4 /* ScreenCaptureKit.framework */; };
 		55FEB9202115EA9A00D8350C /* PIP.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 55FEB91F2115EA9A00D8350C /* PIP.framework */; };
+		55FEB994 /* audio_capture_stub.c in Sources */ = {isa = PBXBuildFile; fileRef = 55FEB931 /* audio_capture_stub.c */; };
+		55FEB995 /* audio_encoder_stub.c in Sources */ = {isa = PBXBuildFile; fileRef = 55FEB933 /* audio_encoder_stub.c */; };
+		55FEB996 /* discovery.c in Sources */ = {isa = PBXBuildFile; fileRef = 55FEB934 /* discovery.c */; };
+		55FEB997 /* fairplay_client.c in Sources */ = {isa = PBXBuildFile; fileRef = 55FEB936 /* fairplay_client.c */; };
+		55FEB999 /* http_client.c in Sources */ = {isa = PBXBuildFile; fileRef = 55FEB93A /* http_client.c */; };
+		55FEB99A /* ntp_client.c in Sources */ = {isa = PBXBuildFile; fileRef = 55FEB93C /* ntp_client.c */; };
+		55FEB99B /* pairing_client.c in Sources */ = {isa = PBXBuildFile; fileRef = 55FEB93E /* pairing_client.c */; };
+		55FEB99C /* rtp_audio.c in Sources */ = {isa = PBXBuildFile; fileRef = 55FEB940 /* rtp_audio.c */; };
+		55FEB99D /* sender.c in Sources */ = {isa = PBXBuildFile; fileRef = 55FEB942 /* sender.c */; };
+		55FEB99E /* stream_client.c in Sources */ = {isa = PBXBuildFile; fileRef = 55FEB944 /* stream_client.c */; };
+		55FEB9A0 /* video_packetizer.c in Sources */ = {isa = PBXBuildFile; fileRef = 55FEB948 /* video_packetizer.c */; };
+		55FEB9A7 /* airplaySender.m in Sources */ = {isa = PBXBuildFile; fileRef = 55FEB9A2 /* airplaySender.m */; };
+		55FEB9A8 /* frame_capture.m in Sources */ = {isa = PBXBuildFile; fileRef = 55FEB9A4 /* frame_capture.m */; };
+		55FEB9A9 /* video_encoder.m in Sources */ = {isa = PBXBuildFile; fileRef = 55FEB9A6 /* video_encoder.m */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -273,9 +288,43 @@
 		55E7C03A246D4A4800BE7DD9 /* imageRenderer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = imageRenderer.h; sourceTree = "<group>"; };
 		55E7C03B246D4AC000BE7DD9 /* metalRenderer.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = metalRenderer.m; sourceTree = "<group>"; };
 		55E7C03D246D4E6900BE7DD9 /* openGLRenderer.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = openGLRenderer.m; sourceTree = "<group>"; };
+		55EB10992F1B0FE30029B5B4 /* ScreenCaptureKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ScreenCaptureKit.framework; path = ../../../../Library/Developer/CommandLineTools/SDKs/MacOSX12.3.sdk/System/Library/Frameworks/ScreenCaptureKit.framework; sourceTree = "<group>"; };
 		55F0590E281D407F00C0A809 /* receiver.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = receiver.h; sourceTree = "<group>"; };
 		55FEB91F2115EA9A00D8350C /* PIP.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = PIP.framework; path = /System/Library/PrivateFrameworks/PIP.framework; sourceTree = "<group>"; };
 		55FEB9212115ECCC00D8350C /* pip.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = pip.h; sourceTree = "<group>"; };
+		55FEB930 /* audio_capture.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = audio_capture.h; sourceTree = "<group>"; };
+		55FEB931 /* audio_capture_stub.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = audio_capture_stub.c; sourceTree = "<group>"; };
+		55FEB932 /* audio_encoder.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = audio_encoder.h; sourceTree = "<group>"; };
+		55FEB933 /* audio_encoder_stub.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = audio_encoder_stub.c; sourceTree = "<group>"; };
+		55FEB934 /* discovery.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = discovery.c; sourceTree = "<group>"; };
+		55FEB935 /* discovery.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = discovery.h; sourceTree = "<group>"; };
+		55FEB936 /* fairplay_client.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = fairplay_client.c; sourceTree = "<group>"; };
+		55FEB937 /* fairplay_client.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = fairplay_client.h; sourceTree = "<group>"; };
+		55FEB938 /* frame_capture.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = frame_capture.h; sourceTree = "<group>"; };
+		55FEB939 /* frame_capture_stub.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = frame_capture_stub.c; sourceTree = "<group>"; };
+		55FEB93A /* http_client.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = http_client.c; sourceTree = "<group>"; };
+		55FEB93B /* http_client.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = http_client.h; sourceTree = "<group>"; };
+		55FEB93C /* ntp_client.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = ntp_client.c; sourceTree = "<group>"; };
+		55FEB93D /* ntp_client.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ntp_client.h; sourceTree = "<group>"; };
+		55FEB93E /* pairing_client.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = pairing_client.c; sourceTree = "<group>"; };
+		55FEB93F /* pairing_client.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = pairing_client.h; sourceTree = "<group>"; };
+		55FEB940 /* rtp_audio.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = rtp_audio.c; sourceTree = "<group>"; };
+		55FEB941 /* rtp_audio.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = rtp_audio.h; sourceTree = "<group>"; };
+		55FEB942 /* sender.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = sender.c; sourceTree = "<group>"; };
+		55FEB943 /* sender.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = sender.h; sourceTree = "<group>"; };
+		55FEB944 /* stream_client.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = stream_client.c; sourceTree = "<group>"; };
+		55FEB945 /* stream_client.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = stream_client.h; sourceTree = "<group>"; };
+		55FEB946 /* video_encoder.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = video_encoder.h; sourceTree = "<group>"; };
+		55FEB947 /* video_encoder_stub.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = video_encoder_stub.c; sourceTree = "<group>"; };
+		55FEB948 /* video_packetizer.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = video_packetizer.c; sourceTree = "<group>"; };
+		55FEB949 /* video_packetizer.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = video_packetizer.h; sourceTree = "<group>"; };
+		55FEB9A1 /* airplaySender.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = airplaySender.h; sourceTree = "<group>"; };
+		55FEB9A2 /* airplaySender.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = airplaySender.m; sourceTree = "<group>"; };
+		55FEB9A3 /* frame_capture.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = frame_capture.h; sourceTree = "<group>"; };
+		55FEB9A4 /* frame_capture.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = frame_capture.m; sourceTree = "<group>"; };
+		55FEB9A5 /* video_encoder.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = video_encoder.h; sourceTree = "<group>"; };
+		55FEB9A6 /* video_encoder.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = video_encoder.m; sourceTree = "<group>"; };
+		55FEB9AA /* ScreenCaptureKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ScreenCaptureKit.framework; path = /System/Volumes/Data/Library/Developer/CommandLineTools/SDKs/MacOSX12.3.sdk/System/Library/Frameworks/ScreenCaptureKit.framework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -286,6 +335,7 @@
 				5547F6E728144CC600E22975 /* libairplay.a in Frameworks */,
 				55FEB9202115EA9A00D8350C /* PIP.framework in Frameworks */,
 				55851A0625C4180500AC5A8B /* SkyLight.framework in Frameworks */,
+				55EB109A2F1B0FE30029B5B4 /* ScreenCaptureKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -477,6 +527,7 @@
 			children = (
 				55ABC4BA1FD2CB91005278DB /* pip */,
 				5547F62E28144BEF00E22975 /* airplay */,
+				55FEB9F828144BEF00E22975 /* airplay_sender */,
 				55ABC4B91FD2CB91005278DB /* Products */,
 				55ABC4C21FD2D2DD005278DB /* Frameworks */,
 			);
@@ -519,6 +570,12 @@
 				55B3031D28170EFF00E54502 /* audioPlayer.m */,
 				55338C04281AA9C200AC997B /* preferences.h */,
 				55338C05281AA9C200AC997B /* preferences.m */,
+				55FEB9A1 /* airplaySender.h */,
+				55FEB9A2 /* airplaySender.m */,
+				55FEB9A3 /* frame_capture.h */,
+				55FEB9A4 /* frame_capture.m */,
+				55FEB9A5 /* video_encoder.h */,
+				55FEB9A6 /* video_encoder.m */,
 			);
 			path = pip;
 			sourceTree = "<group>";
@@ -526,12 +583,47 @@
 		55ABC4C21FD2D2DD005278DB /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				55EB10992F1B0FE30029B5B4 /* ScreenCaptureKit.framework */,
 				558519F625C3FFCF00AC5A8B /* SkyLight.framework */,
 				55FEB91F2115EA9A00D8350C /* PIP.framework */,
+				55FEB9AA /* ScreenCaptureKit.framework */,
 				55ABC4CA1FD2DB73005278DB /* Cocoa.framework */,
 				55ABC4C81FD2D3C5005278DB /* CoreGraphics.framework */,
 			);
 			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		55FEB9F828144BEF00E22975 /* airplay_sender */ = {
+			isa = PBXGroup;
+			children = (
+				55FEB930 /* audio_capture.h */,
+				55FEB931 /* audio_capture_stub.c */,
+				55FEB932 /* audio_encoder.h */,
+				55FEB933 /* audio_encoder_stub.c */,
+				55FEB934 /* discovery.c */,
+				55FEB935 /* discovery.h */,
+				55FEB936 /* fairplay_client.c */,
+				55FEB937 /* fairplay_client.h */,
+				55FEB938 /* frame_capture.h */,
+				55FEB939 /* frame_capture_stub.c */,
+				55FEB93A /* http_client.c */,
+				55FEB93B /* http_client.h */,
+				55FEB93C /* ntp_client.c */,
+				55FEB93D /* ntp_client.h */,
+				55FEB93E /* pairing_client.c */,
+				55FEB93F /* pairing_client.h */,
+				55FEB940 /* rtp_audio.c */,
+				55FEB941 /* rtp_audio.h */,
+				55FEB942 /* sender.c */,
+				55FEB943 /* sender.h */,
+				55FEB944 /* stream_client.c */,
+				55FEB945 /* stream_client.h */,
+				55FEB946 /* video_encoder.h */,
+				55FEB947 /* video_encoder_stub.c */,
+				55FEB948 /* video_packetizer.c */,
+				55FEB949 /* video_packetizer.h */,
+			);
+			path = airplay_sender;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -701,6 +793,20 @@
 				5547F7272814679C00E22975 /* H264Decoder.m in Sources */,
 				5547F7292814679D00E22975 /* HLSPlayer.m in Sources */,
 				5590592C1FDD13810003B647 /* window.m in Sources */,
+				55FEB994 /* audio_capture_stub.c in Sources */,
+				55FEB995 /* audio_encoder_stub.c in Sources */,
+				55FEB996 /* discovery.c in Sources */,
+				55FEB997 /* fairplay_client.c in Sources */,
+				55FEB999 /* http_client.c in Sources */,
+				55FEB99A /* ntp_client.c in Sources */,
+				55FEB99B /* pairing_client.c in Sources */,
+				55FEB99C /* rtp_audio.c in Sources */,
+				55FEB99D /* sender.c in Sources */,
+				55FEB99E /* stream_client.c in Sources */,
+				55FEB9A0 /* video_packetizer.c in Sources */,
+				55FEB9A7 /* airplaySender.m in Sources */,
+				55FEB9A8 /* frame_capture.m in Sources */,
+				55FEB9A9 /* video_encoder.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -781,10 +887,17 @@
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(SYSTEM_LIBRARY_DIR)/PrivateFrameworks",
+					"$(SYSTEM_LIBRARY_DIR)/Frameworks",
+					/System/Volumes/Data/Library/Developer/CommandLineTools/SDKs/MacOSX12.3.sdk/System/Library/Frameworks/,
+				);
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					pip/priv_headers,
 				);
 				INFOPLIST_FILE = pip/info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 10.12;
+				OTHER_LDFLAGS = "$(inherited)";
 				PRODUCT_BUNDLE_IDENTIFIER = com.boggyb.PiP;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 			};
@@ -802,10 +915,17 @@
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(SYSTEM_LIBRARY_DIR)/PrivateFrameworks",
+					"$(SYSTEM_LIBRARY_DIR)/Frameworks",
+					/System/Volumes/Data/Library/Developer/CommandLineTools/SDKs/MacOSX12.3.sdk/System/Library/Frameworks/,
+				);
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					pip/priv_headers,
 				);
 				INFOPLIST_FILE = pip/info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 10.12;
+				OTHER_LDFLAGS = "$(inherited)";
 				PRODUCT_BUNDLE_IDENTIFIER = com.boggyb.PiP;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 			};

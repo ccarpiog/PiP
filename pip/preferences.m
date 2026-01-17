@@ -8,6 +8,9 @@
 
 #import "preferences.h"
 #import <QuartzCore/QuartzCore.h>
+#if __has_include(<ScreenCaptureKit/ScreenCaptureKit.h>)
+#import <ScreenCaptureKit/ScreenCaptureKit.h>
+#endif
 
 Preferences* global_pref = nil;
 
@@ -22,7 +25,7 @@ typedef enum{
   @{@"name": @#name, @"text": @text, @"type": [NSNumber numberWithInt:OptionType##type], @"options": options, @"value": value, @"desc": desc}
 
 static NSArray* getPrefsArray(void){
-  return @[
+  NSMutableArray* prefs = [NSMutableArray arrayWithArray:@[
     OPTION(hidpi, "Use HiDPI mode", CheckBox, [NSNull null], @0, @"on supported displays"),
     OPTION(renderer, "Display Renderer", Select, (@[@"Metal", @"Opengl"]), [NSNumber numberWithInt:DisplayRendererTypeOpenGL], [NSNull null]),
     #ifndef NO_AIRPLAY
@@ -37,7 +40,20 @@ static NSArray* getPrefsArray(void){
     OPTION(wfilter_floating, "Exclude windows", CheckBox, [NSNull null], @1, @"that are floating"),
     OPTION(wfilter_desktop_elemnts, "Exclude windows", CheckBox, [NSNull null], @1, @"that are desktop elements"),
     OPTION(mouse_capture, "Show mouse cursor", CheckBox, [NSNull null], @0, @"when pipping screen"),
-  ];
+  ]];
+
+  // Add ScreenCaptureKit option only on macOS 12.3+
+  if (@available(macOS 12.3, *)) {
+    #if __has_include(<ScreenCaptureKit/ScreenCaptureKit.h>)
+    // ScreenCaptureKit headers are available, check if class is available at runtime
+    NSLog(@"SCStream class: %@", [SCStream class]);
+    if ([SCStream class] != nil) {
+      [prefs addObject:OPTION(use_screencapturekit, "Use ScreenCaptureKit", CheckBox, [NSNull null], @1, @"for window capture (macOS 12.3+)")];
+    }
+    #endif
+  }
+
+  return prefs;
 }
 
 static NSDictionary* getDefaultPrefs(void){

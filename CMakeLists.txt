@@ -7,15 +7,22 @@ project(PiP)
 
 add_compile_options(-fobjc-arc -Wno-deprecated-declarations -Wno-format)
 
-set(frameworks AVFoundation Cocoa VideoToolbox AudioToolbox CoreMedia QuartzCore OpenGL Metal MetalKit PIP SkyLight)
+set(frameworks AVFoundation Cocoa VideoToolbox AudioToolbox CoreMedia QuartzCore OpenGL Metal MetalKit PIP SkyLight ScreenCaptureKit)
 list(TRANSFORM frameworks PREPEND "-framework ")
 
 set(AIRPLAY_SUPPORT_ENABLED 1)
 
 file(GLOB_RECURSE pip_src CONFIGURE_DEPENDS "pip/*.m")
 add_executable(pip ${pip_src})
-target_include_directories(pip PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(pip PUBLIC -fobjc-link-runtime "-F /System/Library/PrivateFrameworks" ${frameworks})
+target_include_directories(pip PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  pip/priv_headers
+)
+target_link_libraries(pip PUBLIC -fobjc-link-runtime
+  "-F /System/Library/PrivateFrameworks"
+  "-F /System/Volumes/Data/Library/Developer/CommandLineTools/SDKs/MacOSX12.3.sdk/System/Library/Frameworks"
+  ${frameworks}
+)
 
 if(${AIRPLAY_SUPPORT_ENABLED} EQUAL 1)
   file(GLOB_RECURSE airplay_src CONFIGURE_DEPENDS "airplay*/*.c")

@@ -19,6 +19,10 @@
 #import "airplaySender.h"
 #endif
 
+#if __has_include(<ScreenCaptureKit/ScreenCaptureKit.h>)
+#import <ScreenCaptureKit/ScreenCaptureKit.h>
+#endif
+
 @class VButton;
 
 @protocol ButtonDelegate <NSObject>
@@ -53,6 +57,10 @@
 @interface Window : NSPanel<NSWindowDelegate, SelectionViewDelegate, ImageRendererDelegate, WindowDelegate, RootViewDelegate, ButtonDelegate, PIPViewControllerDelegate, HLSPlayerDelegate
 #ifndef NO_AIRPLAY
 , AirPlayDiscoveryDelegate
+#endif
+#if __has_include(<ScreenCaptureKit/ScreenCaptureKit.h>)
+, SCStreamDelegate
+, SCStreamOutput
 #endif
 >
 @property (nonatomic) void* conn;

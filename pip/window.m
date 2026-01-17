@@ -450,6 +450,11 @@ static NSImage* get_rel_image(NSImage* img){
   int owner_pid;
   int display_id;
   CGDisplayStreamRef display_stream;
+#if __has_include(<ScreenCaptureKit/ScreenCaptureKit.h>)
+  SCStream *window_stream API_AVAILABLE(macos(12.3));
+  SCStreamConfiguration *window_stream_config API_AVAILABLE(macos(12.3));
+  bool is_window_stream_updating API_AVAILABLE(macos(12.3));
+#endif
 #ifndef NO_AIRPLAY
   AirPlayDiscovery* airplayDiscovery;
   void* httpClient;  // http_client_t*
@@ -474,6 +479,13 @@ static NSImage* get_rel_image(NSImage* img){
 
   airplay_title = title;
   display_stream = NULL;
+#if __has_include(<ScreenCaptureKit/ScreenCaptureKit.h>)
+  if (@available(macOS 12.3, *)) {
+    window_stream = nil;
+    window_stream_config = nil;
+    is_window_stream_updating = false;
+  }
+#endif
 
   shouldEnableFullScreen = is_playing = is_airplay_session = enable;
   is_hls_session = false;
@@ -739,7 +751,7 @@ static NSImage* get_rel_image(NSImage* img){
 
 - (void)togglePlayback{
   if(isWinClosing) return;
-  if(is_airplay_session || display_id >= 0 || is_hls_session){
+  if(is_airplay_session || display_id >= 0 || is_hls_session || window_stream){
     is_playing = !is_playing;
     if(is_hls_session) {
       if(is_playing) [hlsPlayer play];
@@ -960,6 +972,17 @@ static NSImage* get_rel_image(NSImage* img){
 }
 
 - (void)capture{
+  // Skip capture if using ScreenCaptureKit stream (it handles frames directly)
+  // If window_stream is active, the timer shouldn't be running, but check defensively
+#if __has_include(<ScreenCaptureKit/ScreenCaptureKit.h>)
+  if (@available(macOS 12.3, *)) {
+    if (window_stream) {
+      return; // ScreenCaptureKit stream handles frames via callback
+    }
+  }
+#endif
+
+  // Use legacy methods for older macOS or when ScreenCaptureKit is unavailable
   CGImageRef window_image = window_id >= 0 ? CaptureWindow(window_id, is_hidpi) : (display_id >= 0 ? CGDisplayCreateImage(display_id) : NULL);
   if(window_image != NULL){
     CIImage* ciimage = [CIImage imageWithCGImage:window_image];
@@ -1273,12 +1296,27 @@ end:
   display_stream = NULL;
 }
 
+-(void)stopWindowStream{
+#if __has_include(<ScreenCaptureKit/ScreenCaptureKit.h>)
+  if (@available(macOS 12.3, *)) {
+    if(!window_stream) return;
+    [window_stream stopCaptureWithCompletionHandler:^(NSError * _Nullable error) {
+      // Stream stopped
+    }];
+    window_stream = nil;
+    window_stream_config = nil;
+    is_window_stream_updating = false;
+  }
+#endif
+}
+
 - (void)changeWindow:(id)sender{
   WindowSel* sel = [sender representedObject];
   if(window_id == sel.winId && display_id == sel.dspId && !is_hls_session) return;
 
   [self stopTimer];
   [self stopDisplayStream];
+  [self stopWindowStream];
   [self stopAirPlayMirroring:sender];
 
   if(hlsPlayer) {
@@ -1316,17 +1354,212 @@ end:
     [self resetPlaybackSate];
   }
   else if(window_id >= 0){
+#if __has_include(<ScreenCaptureKit/ScreenCaptureKit.h>)
+    // Check if ScreenCaptureKit is enabled in preferences and available
+    bool use_screencapturekit = false;
+    if (@available(macOS 12.3, *)) {
+      use_screencapturekit = [(NSNumber*)getPref(@"use_screencapturekit") intValue] > 0;
+    }
+    if (use_screencapturekit) {
+      [self startWindowStream];
+    } else {
+      // ScreenCaptureKit disabled in preferences or unavailable, use timer-based capture
+      [self startTimer:1.0/refreshRate];
+    }
+#else
+    // ScreenCaptureKit not available, use timer-based capture
     [self startTimer:1.0/refreshRate];
+#endif
   }
 
   [self setMovable:YES];
   [selectionView removeFromSuperview];
   dispatch_async(dispatch_get_main_queue(), ^{[[NSCursor arrowCursor] set];});
-
   [imageView setImage:nil];
   [imageView setHidden:![self is_capturing]];
   [self setOwner:sel.owner withTitle:sel.title];
 }
+
+
+#if __has_include(<ScreenCaptureKit/ScreenCaptureKit.h>)
+
+// SCStreamDelegate method - called when stream stops
+- (void)stream:(SCStream *)stream didStopWithError:(NSError *)error API_AVAILABLE(macos(12.3)) {
+  if (error) {
+    NSLog(@"ScreenCaptureKit stream stopped with error: %@", error);
+  }
+}
+
+- (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer ofType:(SCStreamOutputType)type API_AVAILABLE(macos(12.3)){
+  CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+  if (!imageBuffer) {
+    return;
+  }
+
+  // Extract window size from CMSampleBuffer metadata (no system call needed!)
+  // ScreenCaptureKit provides contentRect and contentScale in the sample attachments or format description
+  CGRect contentRect = CGRectZero;
+  CGFloat contentScale = 1.0;
+  CGFloat scaleFactor = 1.0;
+
+  CFDictionaryRef infoDict = NULL;
+
+  // Try sample attachments first (this is where ScreenCaptureKit typically puts frame info)
+  CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, true);
+  if (attachments && CFArrayGetCount(attachments) > 0) infoDict = (CFDictionaryRef)CFArrayGetValueAtIndex(attachments, 0);
+
+  // If not found in attachments, try format description extensions
+  if(!infoDict){
+    const CMFormatDescriptionRef formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer);
+    if(formatDescription) infoDict = CMFormatDescriptionGetExtensions(formatDescription);
+  }
+
+  if(infoDict){
+    CFNumberRef scaleFactorRef = (CFNumberRef)CFDictionaryGetValue(infoDict, SCStreamFrameInfoScaleFactor);
+    if(scaleFactorRef) CFNumberGetValue(scaleFactorRef, kCFNumberCGFloatType, &scaleFactor);
+
+    CFNumberRef contecntScaleFactorRef = (CFNumberRef)CFDictionaryGetValue(infoDict, SCStreamFrameInfoContentScale);
+    if(contecntScaleFactorRef) CFNumberGetValue(contecntScaleFactorRef, kCFNumberCGFloatType, &contentScale);
+
+    CFDictionaryRef contentRectDict = (CFDictionaryRef)CFDictionaryGetValue(infoDict, SCStreamFrameInfoContentRect);
+    if(contentRectDict) CGRectMakeWithDictionaryRepresentation(contentRectDict, &contentRect);
+  }
+
+  // Get buffer size for comparison
+  size_t bufferWidth = CVPixelBufferGetWidth(imageBuffer);
+  size_t bufferHeight = CVPixelBufferGetHeight(imageBuffer);
+
+  if (contentScale != 1.0 || (bufferWidth / contentRect.size.width != bufferHeight / contentRect.size.height)) {
+    self->window_stream_config.width = (NSUInteger)(contentRect.size.width * scaleFactor / contentScale);
+    self->window_stream_config.height = (NSUInteger)(contentRect.size.height * scaleFactor / contentScale);
+
+    NSLog(@"forceUpdateStream begin");
+    is_window_stream_updating = true;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [self->window_stream updateConfiguration:self->window_stream_config completionHandler:^(NSError * _Nullable updateError) {
+        is_window_stream_updating = false;
+        if (updateError) {
+          NSLog(@"forceUpdateStream: FAILED to update stream configuration: %@, recreating stream", updateError);
+        } else {
+          NSLog(@"forceUpdateStream: SUCCESSFULLY updated stream configuration to %zux%zu", bufferWidth, bufferHeight);
+        }
+      }];
+    });
+
+    return;
+  }
+
+  CIImage *ciImage = [CIImage imageWithCVImageBuffer:imageBuffer];
+
+  if(!ciImage) return;
+
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [self->imageView setImage:ciImage];
+  });
+}
+
+- (void)startWindowStream {
+  if (@available(macOS 12.3, *)) {
+    // Use ScreenCaptureKit for continuous streaming
+    // Get shareable content asynchronously
+    [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent * _Nullable shareableContent, NSError * _Nullable error) {
+        if (error || !shareableContent) {
+          NSLog(@"Failed to get shareable content: %@", error);
+          // Fall back to timer-based capture
+          dispatch_async(dispatch_get_main_queue(), ^{
+            [self startTimer:1.0/refreshRate];
+          });
+          return;
+        }
+
+        // Find the window by CGWindowID
+        SCWindow *targetWindow = nil;
+        for (SCWindow *window in shareableContent.windows) {
+          if (window.windowID == window_id) {
+            targetWindow = window;
+            break;
+          }
+        }
+
+        if (!targetWindow) {
+          NSLog(@"Window %d not found in shareable content", window_id);
+          // Fall back to timer-based capture
+          dispatch_async(dispatch_get_main_queue(), ^{
+            [self startTimer:1.0/refreshRate];
+          });
+          return;
+        }
+
+        // Create content filter for the window
+        SCContentFilter *contentFilter = [[SCContentFilter alloc] initWithDesktopIndependentWindow:targetWindow];
+
+        // Create stream configuration
+        SCStreamConfiguration *streamConfig = [[SCStreamConfiguration alloc] init];
+        CGRect windowFrame = targetWindow.frame;
+        // Use exact window dimensions - we'll recreate the stream if size changes significantly
+        NSUInteger configWidth, configHeight;
+        configWidth = (NSUInteger)(windowFrame.size.width * self.backingScaleFactor);
+        configHeight = (NSUInteger)(windowFrame.size.height * self.backingScaleFactor);
+
+        streamConfig.width = configWidth;
+        streamConfig.height = configHeight;
+        streamConfig.pixelFormat = kCVPixelFormatType_32BGRA;
+        streamConfig.showsCursor = [(NSNumber*)getPref(@"mouse_capture") intValue] > 0 ? YES : NO;
+        streamConfig.minimumFrameInterval = CMTimeMake(1, refreshRate);
+        streamConfig.scalesToFit = NO;
+        streamConfig.queueDepth = 2;
+
+        NSLog(@"startWindowStream: window_id=%d, windowFrame={%.1f,%.1f,%.1f,%.1f}, is_hidpi=%d, config=%lux%lu",
+              window_id, windowFrame.origin.x, windowFrame.origin.y, windowFrame.size.width, windowFrame.size.height,
+              is_hidpi, (unsigned long)configWidth, (unsigned long)configHeight);
+
+        // Store configuration and dimensions for later updates
+        self->window_stream_config = streamConfig;
+
+        // Create stream with delegate to receive content change notifications
+        self->window_stream = [[SCStream alloc] initWithFilter:contentFilter configuration:streamConfig delegate:self];
+
+        NSError *addError = nil;
+        BOOL success = [self->window_stream addStreamOutput:self type:SCStreamOutputTypeScreen sampleHandlerQueue:dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0) error:&addError];
+
+        if (!success || addError) {
+          NSLog(@"Failed to add stream output: %@", addError);
+          // Fall back to timer-based capture
+          dispatch_async(dispatch_get_main_queue(), ^{
+            [self stopWindowStream];
+            [self startTimer:1.0/refreshRate];
+          });
+          return;
+        }
+
+        // Start stream
+        [self->window_stream startCaptureWithCompletionHandler:^(NSError * _Nullable startError) {
+          if (startError) {
+            NSLog(@"Failed to start ScreenCaptureKit stream: %@", startError);
+            // Fall back to timer-based capture
+            dispatch_async(dispatch_get_main_queue(), ^{
+              [self stopWindowStream];
+              [self startTimer:1.0/refreshRate];
+            });
+          } else {
+            NSLog(@"startWindowStream: ScreenCaptureKit stream started successfully with config %lux%lu",
+                  (unsigned long)configWidth, (unsigned long)configHeight);
+            dispatch_async(dispatch_get_main_queue(), ^{
+              self->is_playing = true;
+              // Ensure imageView is visible when capturing starts
+              if (self->imageView) {
+                self->imageView.hidden = NO;
+                NSLog(@"startWindowStream: made imageView visible, hidden=%d", self->imageView.hidden);
+              }
+              [self resetPlaybackSate];
+            });
+          }
+        }];
+      }];
+    }
+  }
+#endif
 
 - (void)selectRegion:(id)sender{
   [self setMovable:NO];
@@ -1642,6 +1875,7 @@ end:
 
   [self stopTimer];
   [self stopDisplayStream];
+  [self stopWindowStream];
 
   window_id = -1;
   pinbutt.delegate = NULL;
