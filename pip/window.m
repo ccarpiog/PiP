@@ -864,6 +864,7 @@ static NSImage* get_rel_image(NSImage* img){
 }
 
 - (void)onResize:(CGSize)size andAspectRatio:(CGSize) ar{
+  NSLog(@"onResize: %@ %@", NSStringFromSize(size), NSStringFromSize(ar));
   [self setAspectRatio:ar];
   if(pvc) [pvc setAspectRatio:ar];
   else{
@@ -889,16 +890,6 @@ static NSImage* get_rel_image(NSImage* img){
 - (void)hlsPlayerDidUpdateFrame:(CIImage *)image {
   if(!is_playing || isWinClosing) return;
   dispatch_async(dispatch_get_main_queue(), ^{
-    CGRect extent = [image extent];
-    if(extent.size.width > 0 && extent.size.height > 0) {
-      NSSize videoSize = NSMakeSize(extent.size.width, extent.size.height);
-      NSSize currentAR = self.aspectRatio;
-      // Update aspect ratio if it hasn't been set or if it changed
-      if(currentAR.width * currentAR.height == 0 ||
-        fabs(currentAR.width / currentAR.height - videoSize.width / videoSize.height) > 0.01) {
-        [self onResize:videoSize andAspectRatio:videoSize];
-      }
-    }
     [self->imageView setImage:image];
   });
 }
