@@ -10,6 +10,8 @@
 - (void)hlsPlayerDidChangeLoadingStatus:(BOOL)isLoading;
 - (void)hlsPlayerDidChangePlaybackRate:(float)rate;
 - (void)hlsPlayerDidChangeDuration:(CMTime)duration;
+- (void)hlsPlayerDidChangeResolution:(CGSize)resolution bitrate:(double)bitrate;
+- (void)hlsPlayerDidChangeSeekableRanges:(NSArray<NSValue *> *)seekableTimeRanges;
 @end
 
 @interface HLSPlayer : NSObject
@@ -26,5 +28,9 @@
 - (void)stop;
 - (void)seekToTime:(CMTime)time;
 - (void)setVolume:(float)volume;
+- (NSArray<NSDictionary *> *)getAvailableQualities;
+- (void)setQuality:(NSDictionary *)quality;
+- (NSDictionary *)getCurrentQuality;
+- (void)setViewportSize:(CGSize)size;
 
 @end

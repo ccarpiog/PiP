@@ -49,6 +49,7 @@ INC_IMG(airplay);
 INC_IMG(airplay_stop);
 
 #define DEFAULT_TITLE @"(right click to begin)"
+#define HLS_BUTTON_IMAGE_SIZE 40
 
 static CGRect kStartRect = {
   .origin = {.x = 0, .y = 0,},
@@ -261,6 +262,47 @@ static NSImage* get_rel_image(NSImage* img){
   return img;
 }
 
+static NSImage* hls_button_image(NSImage* img){
+  // Convert to white and resize to HLS button size
+  NSImage *whiteImg = invert_image(img);
+  NSImage *resizedImage = [[NSImage alloc] initWithSize:NSMakeSize(HLS_BUTTON_IMAGE_SIZE, HLS_BUTTON_IMAGE_SIZE)];
+  [resizedImage lockFocus];
+  [whiteImg drawInRect:NSMakeRect(0, 0, HLS_BUTTON_IMAGE_SIZE, HLS_BUTTON_IMAGE_SIZE) fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1.0];
+  [resizedImage unlockFocus];
+  return resizedImage;
+}
+
+static NSImage* hls_button_image_greyed(NSImage* img){
+  // Create a greyed version (reduced opacity) for pressed state
+  NSImage *normalImage = hls_button_image(img);
+  NSImage *greyedImage = [[NSImage alloc] initWithSize:[normalImage size]];
+  [greyedImage lockFocus];
+  [normalImage drawInRect:NSMakeRect(0, 0, HLS_BUTTON_IMAGE_SIZE, HLS_BUTTON_IMAGE_SIZE) fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:0.5];
+  [greyedImage unlockFocus];
+  return greyedImage;
+}
+
+@interface HLSImageButton : NSButton
+@end
+
+@implementation HLSImageButton
+
+- (void)setImage:(NSImage *)image {
+  [super setImage:image];
+  // Automatically create highlighted (smaller) version and set as alternate image
+  if (image) {
+    NSSize originalSize = [image size];
+    NSSize smallerSize = NSMakeSize(originalSize.width * 0.7, originalSize.height * 0.7);
+    NSImage *smallerImage = [[NSImage alloc] initWithSize:smallerSize];
+    [smallerImage lockFocus];
+    NSRect drawRect = NSMakeRect(0, 0, smallerSize.width, smallerSize.height);
+    [image drawInRect:drawRect fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1.0];
+    [smallerImage unlockFocus];
+    [self setAlternateImage:smallerImage];
+  }
+}
+@end
+
 @interface NSImage (ImageAdditions)
 +(NSImage *)swatchWithColor:(NSColor *)color size:(NSSize)size;
 @end
@@ -274,6 +316,174 @@ static NSImage* get_rel_image(NSImage* img){
   [rectPath fill];
   [image unlockFocus];
   return image;
+}
+@end
+
+@interface SeekSlider : NSSlider
+@property (nonatomic, weak) id seekTarget;
+@property (nonatomic) SEL seekAction;
+@end
+
+@implementation SeekSlider {
+  BOOL isTracking;
+}
+
+- (NSRect)trackRectForBounds:(NSRect)bounds {
+  // Return the actual track rect that matches what we draw in drawRect
+  // This ensures NSSlider's internal value calculations match our visual representation
+  CGFloat trackPadding = 2.0;
+  CGFloat trackHeight = 4.0;
+  CGFloat trackY = (bounds.size.height - trackHeight) / 2.0;
+  return NSMakeRect(trackPadding, trackY, bounds.size.width - (trackPadding * 2), trackHeight);
+}
+
+- (double)valueForMouseLocation:(NSPoint)locationInView {
+  NSRect bounds = [self bounds];
+  NSRect trackRect = [self trackRectForBounds:bounds];
+  double minVal = [self minValue];
+  double maxVal = [self maxValue];
+
+  // Calculate value based on mouse X position within the track area
+  double value = minVal;
+  if (trackRect.size.width > 0) {
+    // Convert mouse X to position relative to track start
+    double relativeX = locationInView.x - trackRect.origin.x;
+    // Clamp to track bounds
+    relativeX = fmax(0.0, fmin(trackRect.size.width, relativeX));
+    // Calculate percentage within track
+    double percentage = relativeX / trackRect.size.width;
+    percentage = fmax(0.0, fmin(1.0, percentage)); // Ensure 0-1 range
+    value = minVal + (maxVal - minVal) * percentage;
+  }
+
+  return value;
+}
+
+- (BOOL)acceptsFirstMouse:(NSEvent *)event {
+  return YES;
+}
+
+- (void)mouseDown:(NSEvent *)event {
+  isTracking = YES;
+
+  // Call the target's action to handle pause/state
+  if (self.seekTarget && self.seekAction) {
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+    [self.seekTarget performSelector:self.seekAction withObject:self];
+    #pragma clang diagnostic pop
+  }
+
+  // Calculate and set value immediately on mouse down
+  NSPoint locationInView = [self convertPoint:[event locationInWindow] fromView:nil];
+  double value = [self valueForMouseLocation:locationInView];
+  [self setDoubleValue:value];
+
+  // Call action for immediate feedback
+  if (self.seekTarget && self.seekAction) {
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+    [self.seekTarget performSelector:self.seekAction withObject:self];
+    #pragma clang diagnostic pop
+  }
+}
+
+- (void)mouseDragged:(NSEvent *)event {
+  if (!isTracking) return;
+
+  NSPoint locationInView = [self convertPoint:[event locationInWindow] fromView:nil];
+  double value = [self valueForMouseLocation:locationInView];
+
+  // Update the slider value to match mouse position
+  [self setDoubleValue:value];
+
+  // Call the action continuously during drag
+  if (self.seekTarget && self.seekAction) {
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+    [self.seekTarget performSelector:self.seekAction withObject:self];
+    #pragma clang diagnostic pop
+  }
+}
+
+- (void)mouseUp:(NSEvent *)event {
+  if (!isTracking) return;
+  isTracking = NO;
+
+  // Calculate value from mouse position
+  NSPoint locationInView = [self convertPoint:[event locationInWindow] fromView:nil];
+  double value = [self valueForMouseLocation:locationInView];
+
+  // Update slider value to match calculated position
+  [self setDoubleValue:value];
+
+  // Perform seek immediately on mouse up with calculated value (for single tap)
+  if (self.seekTarget) {
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+    [self.seekTarget performSelector:@selector(seekSliderMouseUp:withValue:) withObject:self withObject:@(value)];
+    #pragma clang diagnostic pop
+  }
+}
+
+- (void)drawRect:(NSRect)dirtyRect {
+  NSRect bounds = [self bounds];
+
+  // Draw the track manually (a simple rounded rectangle)
+  CGFloat trackHeight = 4.0;
+  CGFloat trackY = (bounds.size.height - trackHeight) / 2.0;
+  CGFloat trackPadding = 2.0;
+  NSRect trackRect = NSMakeRect(trackPadding, trackY, bounds.size.width - (trackPadding * 2), trackHeight);
+
+  // Draw track background
+  NSColor *trackColor = [NSColor colorWithWhite:0.3 alpha:0.5];
+  [trackColor set];
+  NSBezierPath *trackPath = [NSBezierPath bezierPathWithRoundedRect:trackRect xRadius:1.0 yRadius:1.0];
+  [trackPath fill];
+
+  // Draw filled portion of track (before knob position)
+  double minVal = [self minValue];
+  double maxVal = [self maxValue];
+  double currentVal = [self doubleValue];
+  double percentage = 0.0;
+  if (maxVal > minVal) {
+    percentage = (currentVal - minVal) / (maxVal - minVal);
+    percentage = fmax(0.0, fmin(1.0, percentage)); // Clamp to 0-1
+  }
+
+  CGFloat filledWidth = trackRect.size.width * percentage;
+  if (filledWidth > 0) {
+    NSRect filledRect = NSMakeRect(trackRect.origin.x, trackRect.origin.y, filledWidth, trackRect.size.height);
+    NSColor *filledColor = [NSColor colorWithWhite:0.7 alpha:1.0];
+    // if (@available(macOS 10.14, *)) {
+    //   filledColor = [NSColor controlAccentColor];
+    // }
+    [filledColor set];
+    NSBezierPath *filledPath = [NSBezierPath bezierPathWithRoundedRect:filledRect xRadius:1.0 yRadius:1.0];
+    [filledPath fill];
+  }
+
+  // Calculate knob position
+  CGFloat knobX = trackRect.origin.x + (trackRect.size.width * percentage);
+
+  // Draw a thick vertical line at the knob position
+  CGFloat lineWidth = 3.0; // Thickness of the line
+  CGFloat lineHeight = 15.0; // Height of the line
+  CGFloat lineY = (bounds.size.height - lineHeight) / 2.0; // Center align vertically
+
+  // Set the color for the line
+  NSColor *lineColor = [NSColor whiteColor];
+  // if (@available(macOS 10.14, *)) {
+  //   lineColor = [NSColor controlAccentColor];
+  // }
+  [lineColor set];
+
+  // Draw the thick vertical line
+  NSBezierPath *line = [NSBezierPath bezierPath];
+  [line setLineWidth:lineWidth];
+  [line moveToPoint:NSMakePoint(knobX, lineY)];
+  [line lineToPoint:NSMakePoint(knobX, lineY + lineHeight)];
+  [line stroke];
 }
 @end
 
@@ -411,6 +621,7 @@ static NSImage* get_rel_image(NSImage* img){
 @implementation Window{
   NSTimer* timer;
   NSView* butCont;
+  NSVisualEffectView* hlsButCont;
   VButton* pinbutt;
   VButton* popbutt;
   VButton* playbutt;
@@ -437,6 +648,19 @@ static NSImage* get_rel_image(NSImage* img){
   NSButton* hlsLoadButton;
   NSButton* hlsCancelButton;
   NSString* lastSuccessfulHLSURL;
+
+  NSSlider* hlsSeekSlider;
+  NSSlider* hlsVolumeSlider;
+  NSTextField* hlsElapsedTimeLabel;
+  NSTextField* hlsTotalTimeLabel;
+  NSButton* hlsPlayButton;
+  NSButton* hlsPopButton;
+  bool isSeeking;
+  NSTimer* seekDebounceTimer;
+  float pendingSeekValue;
+  BOOL wasPlayingBeforeSeek;
+  int bufferingCheckCount;
+  BOOL isLiveStream;
 
   NSTimer* mouse_timer;
   bool mouse_timer_rerun;
@@ -535,6 +759,21 @@ static NSImage* get_rel_image(NSImage* img){
   butCont = [[NSView alloc] initWithFrame:butContRect];
   butCont.translatesAutoresizingMaskIntoConstraints = false;
 
+  NSRect hlsButContRect = NSMakeRect(0, 12, 160, 55);
+  hlsButCont = [[NSVisualEffectView alloc] initWithFrame:hlsButContRect];
+  if (@available(macOS 10.14, *)) {
+    // hlsButCont.material = NSVisualEffectMaterialLight;
+    hlsButCont.material = NSVisualEffectMaterialHUDWindow;
+  } else {
+    hlsButCont.material = NSVisualEffectMaterialAppearanceBased;
+  }
+  hlsButCont.blendingMode = NSVisualEffectBlendingModeWithinWindow;
+  hlsButCont.state = NSVisualEffectStateActive;
+  hlsButCont.translatesAutoresizingMaskIntoConstraints = false;
+  hlsButCont.wantsLayer = YES;
+  hlsButCont.layer.cornerRadius = 15;
+  hlsButCont.layer.masksToBounds = YES;
+
   popbutt = [[VButton alloc] initWithRadius:buttonRadius andImage:GET_IMG(pop) andImageScale:butScale];
   [popbutt setDelegate:self];
   [popbutt setFrameOrigin:NSMakePoint(round((NSWidth([butCont bounds]) - NSWidth([popbutt frame])) / 2) - (buttonRadius + 7.5), 0)];
@@ -544,6 +783,79 @@ static NSImage* get_rel_image(NSImage* img){
   [playbutt setDelegate:self];
   [playbutt setFrameOrigin:NSMakePoint(round((NSWidth([butCont bounds]) - NSWidth([playbutt frame])) / 2) + (buttonRadius + 7.5), 0)];
   [butCont addSubview:playbutt];
+
+  hlsSeekSlider = [[SeekSlider alloc] initWithFrame:NSMakeRect(45, 5, 70, 20)];
+  [hlsSeekSlider setMinValue:0.0];
+  [hlsSeekSlider setMaxValue:1.0];
+  [hlsSeekSlider setDoubleValue:0.0];
+  [hlsSeekSlider setTarget:self];
+  [hlsSeekSlider setAction:@selector(seekSliderChanged:)];
+  [hlsSeekSlider setContinuous:YES]; // Allow continuous updates for UI
+  [hlsSeekSlider setControlSize:NSControlSizeSmall];
+  [hlsSeekSlider setTranslatesAutoresizingMaskIntoConstraints:NO];
+  ((SeekSlider *)hlsSeekSlider).seekTarget = self;
+  ((SeekSlider *)hlsSeekSlider).seekAction = @selector(seekSliderChanged:);
+  [hlsButCont addSubview:hlsSeekSlider];
+
+  // Create elapsed time label (left of seekbar)
+  hlsElapsedTimeLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(5, 8, 30, 20)];
+  [hlsElapsedTimeLabel setStringValue:@"00:00"];
+  [hlsElapsedTimeLabel setBezeled:NO];
+  [hlsElapsedTimeLabel setDrawsBackground:NO];
+  [hlsElapsedTimeLabel setEditable:NO];
+  [hlsElapsedTimeLabel setSelectable:NO];
+  [hlsElapsedTimeLabel setTextColor:[NSColor whiteColor]];
+  [hlsElapsedTimeLabel setFont:[NSFont systemFontOfSize:11]];
+  [hlsElapsedTimeLabel setAlignment:NSTextAlignmentRight];
+  [hlsElapsedTimeLabel setTranslatesAutoresizingMaskIntoConstraints:NO];
+  [hlsButCont addSubview:hlsElapsedTimeLabel];
+
+  // Create total time label (right of seekbar)
+  hlsTotalTimeLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(120, 8, 30, 20)];
+  [hlsTotalTimeLabel setStringValue:@"00:00"];
+  [hlsTotalTimeLabel setBezeled:NO];
+  [hlsTotalTimeLabel setDrawsBackground:NO];
+  [hlsTotalTimeLabel setEditable:NO];
+  [hlsTotalTimeLabel setSelectable:NO];
+  [hlsTotalTimeLabel setTextColor:[NSColor whiteColor]];
+  [hlsTotalTimeLabel setFont:[NSFont systemFontOfSize:11]];
+  [hlsTotalTimeLabel setAlignment:NSTextAlignmentLeft];
+  [hlsTotalTimeLabel setTranslatesAutoresizingMaskIntoConstraints:NO];
+  [hlsButCont addSubview:hlsTotalTimeLabel];
+
+  // Create horizontal volume slider
+  hlsVolumeSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(5, 27, 40, 20)];
+  [hlsVolumeSlider setMinValue:0.0];
+  [hlsVolumeSlider setMaxValue:1.0];
+  [hlsVolumeSlider setDoubleValue:1.0]; // Default to full volume
+  [hlsVolumeSlider setTarget:self];
+  [hlsVolumeSlider setAction:@selector(volumeSliderChanged:)];
+  [hlsVolumeSlider setControlSize:NSControlSizeSmall];
+  [hlsVolumeSlider setVertical:NO]; // Horizontal slider
+  [hlsVolumeSlider setTranslatesAutoresizingMaskIntoConstraints:NO];
+  [hlsButCont addSubview:hlsVolumeSlider];
+
+  // Create play/pause button for HLS
+  hlsPlayButton = [[HLSImageButton alloc] initWithFrame:NSMakeRect(60, 17, HLS_BUTTON_IMAGE_SIZE, HLS_BUTTON_IMAGE_SIZE)];
+  [hlsPlayButton setButtonType:NSButtonTypeMomentaryChange];
+  [hlsPlayButton setBordered:NO];
+  [hlsPlayButton setImage:hls_button_image(GET_IMG(play))];
+  [hlsPlayButton setImagePosition:NSImageOnly];
+  [hlsPlayButton setTarget:self];
+  [hlsPlayButton setAction:@selector(togglePlayback)];
+  [hlsPlayButton setTranslatesAutoresizingMaskIntoConstraints:NO];
+  [hlsButCont addSubview:hlsPlayButton];
+
+  // Create pop out button for HLS
+  hlsPopButton = [[HLSImageButton alloc] initWithFrame:NSMakeRect(120, 17, HLS_BUTTON_IMAGE_SIZE, HLS_BUTTON_IMAGE_SIZE)];
+  [hlsPopButton setButtonType:NSButtonTypeMomentaryChange];
+  [hlsPopButton setBordered:NO];
+  [hlsPopButton setImage:hls_button_image(GET_IMG(pop))];
+  [hlsPopButton setImagePosition:NSImageOnly];
+  [hlsPopButton setTarget:self];
+  [hlsPopButton setAction:@selector(toggleNativePip)];
+  [hlsPopButton setTranslatesAutoresizingMaskIntoConstraints:NO];
+  [hlsButCont addSubview:hlsPopButton];
 
   int ppbutradius = 10;
   pinbutt = [[VButton alloc] initWithRadius:ppbutradius andImage:nil andImageScale:1.8];
@@ -565,8 +877,11 @@ static NSImage* get_rel_image(NSImage* img){
   imageView.hidden = !is_airplay_session;
 
   [rootView addSubview:imageView];
-  [rootView addSubview:butCont];
   [rootView addSubview:pinbutt];
+
+  // Add butCont last with highest z-index to ensure it's always on top
+  [rootView addSubview:butCont positioned:NSWindowAbove relativeTo:nil];
+  [rootView addSubview:hlsButCont positioned:NSWindowAbove relativeTo:nil];
 
   NSRect pinbutRect = pinbutt.frame;
   [[pinbutt.widthAnchor constraintEqualToConstant:pinbutRect.size.width] setActive:true];
@@ -576,6 +891,9 @@ static NSImage* get_rel_image(NSImage* img){
 
   [[butCont.widthAnchor constraintEqualToConstant:butContRect.size.width] setActive:true];
   [[butCont.centerXAnchor constraintEqualToAnchor:rootView.centerXAnchor constant:-butContRect.origin.x] setActive:true];
+
+  [[hlsButCont.widthAnchor constraintEqualToConstant:hlsButContRect.size.width] setActive:true];
+  [[hlsButCont.centerXAnchor constraintEqualToAnchor:rootView.centerXAnchor constant:-hlsButContRect.origin.x] setActive:true];
 
   NSTrackingAreaOptions nstopts = NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways | NSTrackingInVisibleRect | NSTrackingAssumeInside;
   nstopts |= NSTrackingMouseMoved;
@@ -596,6 +914,8 @@ static NSImage* get_rel_image(NSImage* img){
   [self setOwner:nil withTitle:is_airplay_session ? airplay_title : DEFAULT_TITLE];
 
   [self resetPlaybackSate];
+
+  [self setupNonHLSControls];
 
   return self;
 }
@@ -620,6 +940,8 @@ static NSImage* get_rel_image(NSImage* img){
   imageView.hidden = NO;
   [self resetPlaybackSate];
   [self setOwner:@"HLS" withTitle:[url absoluteString]];
+  isLiveStream = NO; // Will be updated when duration is known
+  [self setupHLSControls];
 }
 
 - (BOOL) canBecomeKeyWindow{
@@ -645,7 +967,11 @@ static NSImage* get_rel_image(NSImage* img){
 
 - (void)mouseMoved:(NSEvent *)event{
   if(pvc) return;
-  if(!mouse_timer)[[butCont animator] setAlphaValue:1];
+  if(!mouse_timer){
+    bool alphaVal = [self ignoresMouseEvents] ? 0 : 1;
+    [[butCont animator] setAlphaValue:alphaVal];
+    [[hlsButCont animator] setAlphaValue:alphaVal];
+  }
   else{
     mouse_timer_rerun = true;
     return;
@@ -657,7 +983,15 @@ static NSImage* get_rel_image(NSImage* img){
       self->mouse_timer_rerun = false;
       [self mouseMoved:event];
     }
-    else [[self->butCont animator] setAlphaValue:0];
+    else{
+      NSEvent *currentEvent = [self currentEvent];
+      if(0
+        || currentEvent.type == NSEventTypeLeftMouseDown
+        || currentEvent.type == NSEventTypeLeftMouseDragged
+      ) return;
+      [[self->butCont animator] setAlphaValue:0];
+      [[self->hlsButCont animator] setAlphaValue:0];
+    }
   }];
   [[NSRunLoop mainRunLoop] addTimer:mouse_timer forMode:NSRunLoopCommonModes];
 }
@@ -676,6 +1010,7 @@ static NSImage* get_rel_image(NSImage* img){
   if(pvc || self.ignoresMouseEvents) alphaVal = 0;
   if(![self isFullScreen]) [[pinbutt animator] setAlphaValue:alphaVal];
   [[butCont animator] setAlphaValue:alphaVal];
+  [[hlsButCont animator] setAlphaValue:alphaVal];
   [[[[self standardWindowButton:NSWindowCloseButton] superview] animator] setAlphaValue:[self isFullScreen] ? 1 : alphaVal];
 }
 
@@ -777,8 +1112,17 @@ static NSImage* get_rel_image(NSImage* img){
 
 - (void)resetPlaybackSate{
   if(pvc) pvc.playing = timer || is_playing;
-  if(timer || is_playing) [playbutt setImage:GET_IMG(pause)];
-  else [playbutt setImage:GET_IMG(play)];
+  if(timer || is_playing) {
+    [playbutt setImage:GET_IMG(pause)];
+    if(hlsPlayButton) {
+      [hlsPlayButton setImage:hls_button_image(GET_IMG(pause))];
+    }
+  } else {
+    [playbutt setImage:GET_IMG(play)];
+    if(hlsPlayButton) {
+      [hlsPlayButton setImage:hls_button_image(GET_IMG(play))];
+    }
+  }
 }
 
 - (void) startPiP{
@@ -885,7 +1229,13 @@ static NSImage* get_rel_image(NSImage* img){
 
 - (void) setVolume:(float)volume{
   [audPlayer setVolume:volume];
-  if(hlsPlayer) [hlsPlayer setVolume:volume];
+  if(hlsPlayer) {
+    [hlsPlayer setVolume:volume];
+    // Update volume slider if it exists
+    if (hlsVolumeSlider) {
+      [hlsVolumeSlider setDoubleValue:volume];
+    }
+  }
 }
 
 - (void)hlsPlayerDidUpdateFrame:(CIImage *)image {
@@ -903,13 +1253,61 @@ static NSImage* get_rel_image(NSImage* img){
       NSSize videoSize = NSMakeSize(1920, 1080); // Default, will be updated from frame
       [self onResize:videoSize andAspectRatio:videoSize];
     }
+    // Initialize volume slider with current player volume
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (self->hlsVolumeSlider) {
+        [self->hlsVolumeSlider setDoubleValue:self->hlsPlayer.player.volume];
+      }
+    });
   } else if(status == AVPlayerItemStatusFailed) {
     NSLog(@"HLS player failed to load");
   }
 }
 
 - (void)hlsPlayerDidChangeTime:(CMTime)time {
-  // Optional: Update UI with current playback time
+  if (isSeeking) return; // Don't update slider while user is seeking
+
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (self->hlsSeekSlider && CMTIME_IS_VALID(time)) {
+      if (self->isLiveStream) {
+        // For live streams, use seekable time ranges (buffered window)
+        AVPlayerItem *item = self->hlsPlayer.player.currentItem;
+        if (item && item.seekableTimeRanges.count > 0) {
+          CMTimeRange seekableRange = [[item.seekableTimeRanges lastObject] CMTimeRangeValue];
+          CMTime seekableStart = seekableRange.start;
+          CMTime seekableDuration = seekableRange.duration;
+
+          if (CMTIME_IS_VALID(seekableStart) && CMTIME_IS_VALID(seekableDuration)) {
+            double currentSeconds = CMTimeGetSeconds(time);
+            double seekableStartSeconds = CMTimeGetSeconds(seekableStart);
+            double seekableDurationSeconds = CMTimeGetSeconds(seekableDuration);
+
+            // Calculate position within seekable range (0.0 = start of buffer, 1.0 = live edge)
+            if (seekableDurationSeconds > 0) {
+              double relativePosition = (currentSeconds - seekableStartSeconds) / seekableDurationSeconds;
+              relativePosition = fmax(0.0, fmin(1.0, relativePosition)); // Clamp to [0, 1]
+              [self->hlsSeekSlider setDoubleValue:relativePosition];
+
+              // Update time label showing position in buffer
+              double bufferPosition = currentSeconds - seekableStartSeconds;
+              [self updateHLSLiveTimeLabel:bufferPosition bufferDuration:seekableDurationSeconds];
+            }
+          }
+        }
+      } else {
+        // For non-live streams, use duration
+        CMTime duration = self->hlsPlayer.duration;
+        if (CMTIME_IS_VALID(duration) && !CMTIME_IS_INDEFINITE(duration)) {
+          double currentSeconds = CMTimeGetSeconds(time);
+          double durationSeconds = CMTimeGetSeconds(duration);
+          if (durationSeconds > 0) {
+            [self->hlsSeekSlider setDoubleValue:currentSeconds / durationSeconds];
+            [self updateHLSTimeLabel:currentSeconds duration:durationSeconds];
+          }
+        }
+      }
+    }
+  });
 }
 
 - (void)hlsPlayerDidEncounterError:(NSError *)error {
@@ -941,12 +1339,116 @@ static NSImage* get_rel_image(NSImage* img){
   // Could update UI to show playback speed if needed
 }
 
-- (void)hlsPlayerDidChangeDuration:(CMTime)duration {
-  if (CMTIME_IS_VALID(duration) && !CMTIME_IS_INDEFINITE(duration)) {
-    double durationSeconds = CMTimeGetSeconds(duration);
-    NSLog(@"HLS player duration: %.2f seconds", durationSeconds);
-    // Could update UI with duration information if needed
+- (void)hlsPlayerDidChangeSeekableRanges:(NSArray<NSValue *> *)seekableTimeRanges {
+  // Update live stream time labels when seekable range changes
+  if (isLiveStream && hlsPlayer && seekableTimeRanges.count > 0) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      CMTimeRange seekableRange = [[seekableTimeRanges lastObject] CMTimeRangeValue];
+      CMTime seekableDuration = seekableRange.duration;
+      if (CMTIME_IS_VALID(seekableDuration)) {
+        double bufferDurationSeconds = CMTimeGetSeconds(seekableDuration);
+        CMTime currentTime = [self->hlsPlayer.player currentTime];
+        if (CMTIME_IS_VALID(currentTime)) {
+          CMTime seekableStart = seekableRange.start;
+          if (CMTIME_IS_VALID(seekableStart)) {
+            double currentSeconds = CMTimeGetSeconds(currentTime);
+            double seekableStartSeconds = CMTimeGetSeconds(seekableStart);
+            double bufferPosition = currentSeconds - seekableStartSeconds;
+            [self updateHLSLiveTimeLabel:bufferPosition bufferDuration:bufferDurationSeconds];
+
+            // Update slider position (1.0 = live edge)
+            if (self->hlsSeekSlider && bufferDurationSeconds > 0) {
+              double relativePosition = bufferPosition / bufferDurationSeconds;
+              relativePosition = fmax(0.0, fmin(1.0, relativePosition));
+              if (!self->isSeeking) {
+                [self->hlsSeekSlider setDoubleValue:relativePosition];
+              }
+            }
+          }
+        }
+      }
+    });
   }
+}
+
+- (void)hlsPlayerDidChangeDuration:(CMTime)duration {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    // Check if this is a live stream (indefinite duration)
+    if (CMTIME_IS_INDEFINITE(duration)) {
+      self->isLiveStream = YES;
+      NSLog(@"HLS player: Live stream detected (indefinite duration)");
+
+      // Enable seek slider for live streams (allows seeking within buffer window)
+      if (self->hlsSeekSlider) {
+        [self->hlsSeekSlider setEnabled:YES];
+        [self->hlsSeekSlider setAlphaValue:1.0]; // Full opacity
+        // Set slider to end (live edge) initially
+        [self->hlsSeekSlider setDoubleValue:1.0];
+      }
+
+      // Update time labels for live stream (will be updated as buffer changes)
+      if (self->hlsElapsedTimeLabel) {
+        [self->hlsElapsedTimeLabel setTextColor:[NSColor whiteColor]];
+      }
+      if (self->hlsTotalTimeLabel) {
+        [self->hlsTotalTimeLabel setTextColor:[NSColor whiteColor]];
+      }
+
+      // Update time labels based on current seekable range
+      AVPlayerItem *item = self->hlsPlayer.player.currentItem;
+      if (item && item.seekableTimeRanges.count > 0) {
+        CMTimeRange seekableRange = [[item.seekableTimeRanges lastObject] CMTimeRangeValue];
+        CMTime seekableDuration = seekableRange.duration;
+        if (CMTIME_IS_VALID(seekableDuration)) {
+          double bufferDurationSeconds = CMTimeGetSeconds(seekableDuration);
+          CMTime currentTime = [self->hlsPlayer.player currentTime];
+          if (CMTIME_IS_VALID(currentTime)) {
+            CMTime seekableStart = seekableRange.start;
+            if (CMTIME_IS_VALID(seekableStart)) {
+              double currentSeconds = CMTimeGetSeconds(currentTime);
+              double seekableStartSeconds = CMTimeGetSeconds(seekableStart);
+              double bufferPosition = currentSeconds - seekableStartSeconds;
+              [self updateHLSLiveTimeLabel:bufferPosition bufferDuration:bufferDurationSeconds];
+            }
+          }
+        }
+      }
+    } else if (CMTIME_IS_VALID(duration)) {
+      self->isLiveStream = NO;
+      double durationSeconds = CMTimeGetSeconds(duration);
+      NSLog(@"HLS player duration: %.2f seconds", durationSeconds);
+
+      // Enable seek slider for non-live streams
+      if (self->hlsSeekSlider) {
+        [self->hlsSeekSlider setEnabled:YES];
+        [self->hlsSeekSlider setAlphaValue:1.0]; // Full opacity
+      }
+
+      // Update time labels with normal time display
+      if (self->hlsElapsedTimeLabel) {
+        [self->hlsElapsedTimeLabel setTextColor:[NSColor whiteColor]];
+      }
+      if (self->hlsTotalTimeLabel) {
+        [self->hlsTotalTimeLabel setTextColor:[NSColor whiteColor]];
+      }
+
+      if (self->hlsSeekSlider) {
+        // Keep maxValue at 1.0 for normalized 0-1 range
+        CMTime currentTime = [self->hlsPlayer.player currentTime];
+        if (CMTIME_IS_VALID(currentTime)) {
+          double currentSeconds = CMTimeGetSeconds(currentTime);
+          // Update slider position based on normalized value
+          if (durationSeconds > 0) {
+            double normalizedValue = currentSeconds / durationSeconds;
+            if (normalizedValue >= 0.0 && normalizedValue <= 1.0) {
+              [self->hlsSeekSlider setDoubleValue:normalizedValue];
+            }
+          }
+          [self updateHLSTimeLabel:currentSeconds duration:durationSeconds];
+        }
+      }
+    }
+  });
 }
 
 - (void) renderAudio:(uint8_t*) data withLength:(size_t) length{
@@ -1227,6 +1729,30 @@ static NSImage* get_rel_image(NSImage* img){
   }
 #endif
 end:
+  if(is_hls_session && !pvc){
+    // Add quality/resolution selection menu for HLS
+    if (hlsPlayer) {
+      NSMenu *qualityMenu = [[NSMenu alloc] init];
+      NSArray<NSDictionary *> *qualities = [hlsPlayer getAvailableQualities];
+      NSDictionary *currentQuality = [hlsPlayer getCurrentQuality];
+
+      for (NSDictionary *quality in qualities) {
+        NSString *qualityName = quality[@"name"];
+        NSMenuItem *qualityItem = [qualityMenu addItemWithTitle:qualityName action:@selector(selectHLSQuality:) keyEquivalent:@""];
+        [qualityItem setTarget:self];
+        [qualityItem setRepresentedObject:quality];
+
+        // Mark current quality with checkmark
+        if ([qualityName isEqualToString:currentQuality[@"name"]]) {
+          [qualityItem setState:NSControlStateValueOn];
+        }
+      }
+
+      ADD_MENU_ITEM(theMenu, @"Video Quality", nil, NULL, {
+        [item setSubmenu:qualityMenu];
+      })
+    }
+  }
 
   if(!pvc && ([self is_capturing] || is_airplay_session || is_hls_session)){
     NSSize cropSize = [imageView.renderer cropRect].size;
@@ -1273,7 +1799,8 @@ end:
 }
 
 - (void)setScale:(id)sender{
-  if([self is_capturing] || is_airplay_session) [imageView.renderer setScale:[sender tag]];
+  if(is_hls_session) [imageView.renderer setScale:[sender tag] * self.backingScaleFactor];
+  else if([self is_capturing] || is_airplay_session) [imageView.renderer setScale:[sender tag]];
 }
 
 - (void)adjustOpacity:(id)sender{
@@ -1316,6 +1843,20 @@ end:
     hlsPlayer = nil;
     is_hls_session = false;
   }
+
+  is_playing = false;
+  [self resetPlaybackSate];
+
+  CIImage* img = [self->imageView.renderer currentImage];
+  if(img){
+    CIImage *transparentImage = [CIImage imageWithColor:[CIColor colorWithRed:0.0 green:0.0 blue:0.0 alpha:1.0]];
+    CIImage *finalImage = [transparentImage imageByCroppingToRect:img.extent];
+    NSLog(@"finalImage: %@", finalImage);
+    [self->imageView setImage:finalImage];
+  }
+
+  // Restore non-HLS controls when HLS session ends
+  [self setupNonHLSControls];
 
   window_id = sel.winId;
   display_id = sel.dspId;
@@ -1367,7 +1908,7 @@ end:
   [self setMovable:YES];
   [selectionView removeFromSuperview];
   dispatch_async(dispatch_get_main_queue(), ^{[[NSCursor arrowCursor] set];});
-  [imageView setImage:nil];
+//  [imageView setImage:nil];
   [imageView setHidden:![self is_capturing]];
   [self setOwner:sel.owner withTitle:sel.title];
 }
@@ -1383,6 +1924,8 @@ end:
 }
 
 - (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer ofType:(SCStreamOutputType)type API_AVAILABLE(macos(12.3)){
+  if(!is_playing || isWinClosing) return;
+
   CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
   if (!imageBuffer) {
     return;
@@ -1564,6 +2107,414 @@ end:
   [self onSelcetion:CGRectZero];
 }
 
+- (void)setupNonHLSControls {
+  butCont.hidden = false;
+  hlsButCont.hidden = true;
+}
+
+- (void)setupHLSControls {
+  isSeeking = false;
+  hlsButCont.hidden = false;
+  butCont.hidden = true;
+}
+
+- (void)updateHLSTimeLabel:(double)currentSeconds duration:(double)durationSeconds {
+  // Update elapsed time label
+  if (hlsElapsedTimeLabel) {
+    int currentMin = (int)(currentSeconds / 60);
+    int currentSec = (int)(currentSeconds) % 60;
+    NSString *elapsedString = [NSString stringWithFormat:@"%02d:%02d", currentMin, currentSec];
+    [hlsElapsedTimeLabel setStringValue:elapsedString];
+  }
+
+  // Update total time label
+  if (hlsTotalTimeLabel) {
+    int durationMin = (int)(durationSeconds / 60);
+    int durationSec = (int)(durationSeconds) % 60;
+    NSString *totalString = [NSString stringWithFormat:@"%02d:%02d", durationMin, durationSec];
+    [hlsTotalTimeLabel setStringValue:totalString];
+  }
+}
+
+- (void)updateHLSLiveTimeLabel:(double)bufferPosition bufferDuration:(double)bufferDurationSeconds {
+  // Update elapsed time label showing position in buffer
+  if (hlsElapsedTimeLabel) {
+    int bufferMin = (int)(bufferPosition / 60);
+    int bufferSec = (int)(bufferPosition) % 60;
+    NSString *elapsedString = [NSString stringWithFormat:@"-%02d:%02d", bufferMin, bufferSec];
+    [hlsElapsedTimeLabel setStringValue:elapsedString];
+  }
+
+  // Update total time label showing buffer duration
+  if (hlsTotalTimeLabel) {
+    int durationMin = (int)(bufferDurationSeconds / 60);
+    int durationSec = (int)(bufferDurationSeconds) % 60;
+    NSString *totalString = [NSString stringWithFormat:@"%02d:%02d", durationMin, durationSec];
+    [hlsTotalTimeLabel setStringValue:totalString];
+  }
+}
+
+- (void)seekSliderChanged:(id)sender {
+  if (!hlsPlayer || !hlsSeekSlider) return;
+
+  NSSlider *slider = (NSSlider *)sender;
+  double value = [slider doubleValue];
+
+  if (isLiveStream) {
+    // For live streams, update time label based on seekable range
+    AVPlayerItem *item = hlsPlayer.player.currentItem;
+    if (item && item.seekableTimeRanges.count > 0) {
+      CMTimeRange seekableRange = [[item.seekableTimeRanges lastObject] CMTimeRangeValue];
+      CMTime seekableStart = seekableRange.start;
+      CMTime seekableDuration = seekableRange.duration;
+
+      if (CMTIME_IS_VALID(seekableStart) && CMTIME_IS_VALID(seekableDuration)) {
+        double seekableStartSeconds = CMTimeGetSeconds(seekableStart);
+        double seekableDurationSeconds = CMTimeGetSeconds(seekableDuration);
+        double bufferPosition = value * seekableDurationSeconds;
+        [self updateHLSLiveTimeLabel:bufferPosition bufferDuration:seekableDurationSeconds];
+      }
+    }
+
+    // Store pending seek value and cancel any pending seek
+    pendingSeekValue = value;
+
+    // If this is the first interaction during this drag, pause playback and remember state
+    if (!isSeeking && !seekDebounceTimer) {
+      AVPlayer *player = hlsPlayer.player;
+      wasPlayingBeforeSeek = player.rate > 0.0;
+
+      // Pause playback immediately when user starts seeking
+      if (wasPlayingBeforeSeek) {
+        NSLog(@"HLS seek (live): Pausing playback for seek");
+        [hlsPlayer pause];
+        is_playing = NO;
+        [self resetPlaybackSate];
+      }
+    }
+
+    // Cancel any existing debounce timer
+    if (seekDebounceTimer) {
+      [seekDebounceTimer invalidate];
+      seekDebounceTimer = nil;
+    }
+
+    // Debounce: wait for user to stop dragging before seeking
+    seekDebounceTimer = [NSTimer timerWithTimeInterval:0.15 repeats:NO block:^(NSTimer * _Nonnull timer) {
+      if (!self->isSeeking && self->pendingSeekValue >= 0.0 && self->pendingSeekValue <= 1.0) {
+        [self performSeekToValue:self->pendingSeekValue];
+      }
+      self->seekDebounceTimer = nil;
+    }];
+    [[NSRunLoop mainRunLoop] addTimer:seekDebounceTimer forMode:NSRunLoopCommonModes];
+    return;
+  }
+
+  // Non-live stream handling continues below...
+
+  // Update time label immediately for responsive UI
+  CMTime duration = hlsPlayer.duration;
+  if (CMTIME_IS_VALID(duration) && !CMTIME_IS_INDEFINITE(duration)) {
+    double durationSeconds = CMTimeGetSeconds(duration);
+    double currentSeconds = value * durationSeconds;
+    [self updateHLSTimeLabel:currentSeconds duration:durationSeconds];
+  }
+
+  // Store pending seek value and cancel any pending seek
+  pendingSeekValue = value;
+
+  // If this is the first interaction during this drag, pause playback and remember state
+  if (!isSeeking && !seekDebounceTimer) {
+    AVPlayer *player = hlsPlayer.player;
+    wasPlayingBeforeSeek = player.rate > 0.0;
+
+    // Pause playback immediately when user starts seeking
+    if (wasPlayingBeforeSeek) {
+      NSLog(@"HLS seek: Pausing playback for seek");
+      [hlsPlayer pause];
+      is_playing = NO;
+      [self resetPlaybackSate];
+    }
+  }
+
+  // Cancel any existing debounce timer
+  if (seekDebounceTimer) {
+    [seekDebounceTimer invalidate];
+    seekDebounceTimer = nil;
+  }
+
+  // Debounce: wait for user to stop dragging before seeking
+  // This prevents multiple rapid seeks while dragging
+  // Use a shorter interval (0.15s) for more responsive seeking
+  seekDebounceTimer = [NSTimer timerWithTimeInterval:0.15 repeats:NO block:^(NSTimer * _Nonnull timer) {
+    // Only perform seek if not already seeking and value is valid
+    if (!self->isSeeking && self->pendingSeekValue >= 0.0 && self->pendingSeekValue <= 1.0) {
+      [self performSeekToValue:self->pendingSeekValue];
+    } else {
+      NSLog(@"HLS seek: Skipping debounced seek - isSeeking=%d, value=%.4f", self->isSeeking, self->pendingSeekValue);
+    }
+    self->seekDebounceTimer = nil;
+  }];
+  [[NSRunLoop mainRunLoop] addTimer:seekDebounceTimer forMode:NSRunLoopCommonModes];
+}
+
+- (void)seekSliderMouseUp:(id)sender withValue:(NSNumber *)valueNumber {
+  // Called when mouse is released on slider - perform seek immediately for single tap
+  if (!hlsPlayer || !hlsSeekSlider || isSeeking) return;
+
+  double value = [valueNumber doubleValue];
+
+  if (isLiveStream) {
+    // For live streams, perform seek within seekable range
+    pendingSeekValue = value;
+    [self performSeekToValue:value];
+    return;
+  }
+
+  // Non-live stream handling continues below...
+
+  // Clamp and validate
+  if (value < 0.0) value = 0.0;
+  if (value > 1.0) value = 1.0;
+
+  // Check if this is actually a different position
+  CMTime duration = hlsPlayer.duration;
+  if (CMTIME_IS_VALID(duration) && !CMTIME_IS_INDEFINITE(duration)) {
+    double durationSeconds = CMTimeGetSeconds(duration);
+    double targetSeconds = value * durationSeconds;
+    CMTime currentTime = [hlsPlayer.player currentTime];
+    double currentSeconds = CMTIME_IS_VALID(currentTime) ? CMTimeGetSeconds(currentTime) : 0.0;
+
+    // Only seek if the target is significantly different (more than 0.5 seconds)
+    if (fabs(targetSeconds - currentSeconds) < 0.5) {
+      NSLog(@"HLS seek: Skipping seek - target (%.2f) too close to current (%.2f)", targetSeconds, currentSeconds);
+      return;
+    }
+  }
+
+  // Cancel any pending debounce timer since we're seeking now
+  if (seekDebounceTimer) {
+    [seekDebounceTimer invalidate];
+    seekDebounceTimer = nil;
+  }
+
+  // Perform seek immediately
+  pendingSeekValue = value;
+  [self performSeekToValue:value];
+}
+
+- (void)performSeekToValue:(double)value {
+  if (!hlsPlayer || isSeeking) {
+    NSLog(@"HLS seek: Skipping seek - player=%p, isSeeking=%d", hlsPlayer, isSeeking);
+    return;
+  }
+
+  // Clamp value to valid range [0.0, 1.0]
+  if (value < 0.0) value = 0.0;
+  if (value > 1.0) value = 1.0;
+
+  CMTime seekTime;
+
+  if (isLiveStream) {
+    // For live streams, seek within the seekable time range (buffer window)
+    AVPlayerItem *item = hlsPlayer.player.currentItem;
+    if (!item || item.seekableTimeRanges.count == 0) {
+      NSLog(@"HLS seek (live): No seekable time ranges available");
+      return;
+    }
+
+    CMTimeRange seekableRange = [[item.seekableTimeRanges lastObject] CMTimeRangeValue];
+    CMTime seekableStart = seekableRange.start;
+    CMTime seekableDuration = seekableRange.duration;
+
+    if (!CMTIME_IS_VALID(seekableStart) || !CMTIME_IS_VALID(seekableDuration)) {
+      NSLog(@"HLS seek (live): Invalid seekable time range");
+      return;
+    }
+
+    double seekableStartSeconds = CMTimeGetSeconds(seekableStart);
+    double seekableDurationSeconds = CMTimeGetSeconds(seekableDuration);
+
+    // Calculate seek time within the buffer window
+    // value 0.0 = start of buffer, value 1.0 = live edge (end of buffer)
+    double seekSeconds = seekableStartSeconds + (value * seekableDurationSeconds);
+    seekTime = CMTimeMakeWithSeconds(seekSeconds, NSEC_PER_SEC);
+
+    NSLog(@"HLS seek (live): Seeking to %.2f seconds (buffer: %.2f - %.2f, value=%.4f)",
+          seekSeconds, seekableStartSeconds, seekableStartSeconds + seekableDurationSeconds, value);
+  } else {
+    // For non-live streams, use duration
+    CMTime duration = hlsPlayer.duration;
+    if (!CMTIME_IS_VALID(duration) || CMTIME_IS_INDEFINITE(duration)) {
+      NSLog(@"HLS seek: Invalid duration");
+      return;
+    }
+
+    double durationSeconds = CMTimeGetSeconds(duration);
+    double seekSeconds = value * durationSeconds;
+
+    // Clamp seek time to valid range
+    if (seekSeconds < 0.0) seekSeconds = 0.0;
+    if (seekSeconds > durationSeconds) seekSeconds = durationSeconds;
+
+    seekTime = CMTimeMakeWithSeconds(seekSeconds, NSEC_PER_SEC);
+
+    NSLog(@"HLS seek: Seeking to %.2f seconds (value=%.4f, duration=%.2f)", seekSeconds, value, durationSeconds);
+  }
+
+  AVPlayer *player = hlsPlayer.player;
+
+  // Get current time for comparison
+  CMTime currentTime = [player currentTime];
+  double currentSeconds = CMTIME_IS_VALID(currentTime) ? CMTimeGetSeconds(currentTime) : 0.0;
+  double seekSeconds = CMTimeGetSeconds(seekTime);
+
+  if (!isLiveStream) {
+    CMTime duration = hlsPlayer.duration;
+    double durationSeconds = CMTIME_IS_VALID(duration) ? CMTimeGetSeconds(duration) : 0.0;
+    NSLog(@"HLS seek: Performing seek from %.2f to %.2f seconds (value=%.4f, duration=%.2f), wasPlaying=%d",
+          currentSeconds, seekSeconds, value, durationSeconds, wasPlayingBeforeSeek);
+  } else {
+    NSLog(@"HLS seek (live): Performing seek from %.2f to %.2f seconds (value=%.4f), wasPlaying=%d",
+          currentSeconds, seekSeconds, value, wasPlayingBeforeSeek);
+  }
+
+  isSeeking = true;
+  bufferingCheckCount = 0; // Reset buffering check counter
+
+  // Use AVPlayer's completion handler version to resume playback if needed
+  [player seekToTime:seekTime toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero completionHandler:^(BOOL finished) {
+    NSLog(@"HLS seek: Seek completed, finished=%d, wasPlaying=%d", finished, self->wasPlayingBeforeSeek);
+    if (finished) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        self->isSeeking = false;
+
+        // Resume playback if it was playing before the seek
+        if (self->wasPlayingBeforeSeek) {
+          // Ensure is_playing flag is set
+          self->is_playing = YES;
+
+          NSLog(@"HLS seek: Resuming playback after seek");
+
+          // Wait a brief moment for buffering, then resume
+          // The player will continue buffering during playback if needed
+          dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self resumePlaybackAfterSeek];
+          });
+        }
+      });
+    } else {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        self->isSeeking = false;
+      });
+    }
+  }];
+}
+
+- (void)resumePlaybackAfterSeek {
+  NSLog(@"HLS seek: resumePlaybackAfterSeek called, wasPlayingBeforeSeek=%d", wasPlayingBeforeSeek);
+
+  // Only resume if playback was active before seeking
+  if (!wasPlayingBeforeSeek) {
+    NSLog(@"HLS seek: Was not playing before seek, not resuming");
+    [self resetPlaybackSate];
+    return;
+  }
+
+  // Ensure is_playing flag is set
+  is_playing = YES;
+
+  // Ensure player rate is set first, then call play
+  AVPlayer *player = hlsPlayer.player;
+  player.rate = 1.0;
+
+  // Call play() which will ensure frame timer is running
+  [hlsPlayer play];
+
+  // Double-check everything after a brief delay
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    AVPlayer *player = self->hlsPlayer.player;
+    if (player.rate == 0.0) {
+      NSLog(@"HLS seek: Player rate is 0 after play(), forcing to 1.0 again");
+      player.rate = 1.0;
+      // Try play() again
+      [self->hlsPlayer play];
+    } else {
+      NSLog(@"HLS seek: Player rate is %.2f, should be playing", player.rate);
+    }
+
+    // Verify player item is ready
+    AVPlayerItem *item = player.currentItem;
+    if (item) {
+      NSLog(@"HLS seek: Player item status=%ld, playbackLikelyToKeepUp=%d, playbackBufferEmpty=%d, currentTime=%.2f",
+            (long)item.status, item.playbackLikelyToKeepUp, item.playbackBufferEmpty,
+            CMTimeGetSeconds([player currentTime]));
+    }
+
+    [self resetPlaybackSate];
+  });
+}
+
+- (void)waitForBufferingAndResume {
+  bufferingCheckCount++;
+
+  // Timeout after 5 seconds (50 checks * 0.1s) to prevent infinite loop
+  if (bufferingCheckCount > 50) {
+    NSLog(@"HLS seek: Buffering timeout, resuming anyway");
+    [self resumePlaybackAfterSeek];
+    return;
+  }
+
+  AVPlayerItem *item = hlsPlayer.player.currentItem;
+  if (!item) {
+    NSLog(@"HLS seek: No player item, resuming");
+    [self resumePlaybackAfterSeek];
+    return;
+  }
+
+  if (item.playbackLikelyToKeepUp && !item.playbackBufferEmpty) {
+    NSLog(@"HLS seek: Buffering complete after %d checks, resuming", bufferingCheckCount);
+    [self resumePlaybackAfterSeek];
+  } else {
+    // Check again in 0.1 seconds
+    if (bufferingCheckCount % 10 == 0) { // Log every 10 checks to reduce spam
+      NSLog(@"HLS seek: Still buffering (check %d), playbackLikelyToKeepUp=%d, playbackBufferEmpty=%d",
+            bufferingCheckCount, item.playbackLikelyToKeepUp, item.playbackBufferEmpty);
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+      // Only continue if we're still seeking (another seek might have started)
+      if (self->isSeeking) {
+        [self waitForBufferingAndResume];
+      }
+    });
+  }
+}
+
+- (void)volumeSliderChanged:(id)sender {
+  if (!hlsPlayer) return;
+
+  NSSlider *slider = (NSSlider *)sender;
+  float volume = (float)[slider doubleValue];
+  [hlsPlayer setVolume:volume];
+
+  // Sync the other volume slider if it exists
+  if (hlsVolumeSlider && slider != hlsVolumeSlider) {
+    [hlsVolumeSlider setDoubleValue:volume];
+  }
+}
+
+- (void)selectHLSQuality:(id)sender {
+  if (!hlsPlayer) return;
+
+  NSMenuItem *item = (NSMenuItem *)sender;
+  NSDictionary *quality = [item representedObject];
+
+  if (quality) {
+    [hlsPlayer setQuality:quality];
+    NSLog(@"HLS quality changed to: %@", quality[@"name"]);
+  }
+}
+
 - (void)updateHLSInputViewLayout {
   if (!hlsInputView) return;
 
@@ -1739,12 +2690,13 @@ end:
 
 - (void)windowDidResize:(NSNotification *)notification {
   [self updateHLSInputViewLayout];
+  if (is_hls_session && hlsPlayer && !isWinClosing) [hlsPlayer setViewportSize:[self contentRectForFrameRect:self.frame].size];
 }
 
 - (void)loadHLSURLFromInput:(id)sender {
   if (!hlsInputField) return;
 
-  NSString *inputString = [hlsInputField stringValue];
+  NSString *inputString = [[hlsInputField stringValue] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
   if(inputString.length == 0) return;
 
   NSURL *url = nil;
@@ -1810,15 +2762,12 @@ end:
 
 - (void)dismissHLSInputView {
   if(!hlsInputView) return;
-  [[NSNotificationCenter defaultCenter] removeObserver:self name:NSWindowDidResizeNotification object:self];
   [hlsInputView removeFromSuperview];
   hlsInputView = nil;
   hlsInputField = nil;
   hlsLoadButton = nil;
   hlsCancelButton = nil;
 }
-
-- (void)cancel:(id)arg1{}
 
 - (void)windowWillClose:(NSNotification *)notification{
 //  NSLog(@"windowWillClose");
@@ -1908,6 +2857,32 @@ end:
   if(hlsPlayer) {
     [hlsPlayer stop];
     hlsPlayer = nil;
+  }
+
+  // Clean up HLS controls
+  if (hlsSeekSlider) {
+    [hlsSeekSlider removeFromSuperview];
+    hlsSeekSlider = nil;
+  }
+  if (hlsVolumeSlider) {
+    [hlsVolumeSlider removeFromSuperview];
+    hlsVolumeSlider = nil;
+  }
+  if (hlsElapsedTimeLabel) {
+    [hlsElapsedTimeLabel removeFromSuperview];
+    hlsElapsedTimeLabel = nil;
+  }
+  if (hlsTotalTimeLabel) {
+    [hlsTotalTimeLabel removeFromSuperview];
+    hlsTotalTimeLabel = nil;
+  }
+  if (hlsPlayButton) {
+    [hlsPlayButton removeFromSuperview];
+    hlsPlayButton = nil;
+  }
+  if (hlsPopButton) {
+    [hlsPopButton removeFromSuperview];
+    hlsPopButton = nil;
   }
 
   [super close];
@@ -2324,3 +3299,11 @@ static void sender_state_callback(sender_state_t state, const char *error, void 
 #endif
 
 @end
+
+/*
+https://www.cbsnews.com/live/#x
+https://ottverse.com/free-hls-m3u8-test-urls/
+https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8
+https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8
+https://dai.google.com/linear/hls/pb/event/Sid4xiTQTkCT1SLu6rjUSQ/stream/01f14b60-c54a-4b65-a3ce-025eda9a4696:TPE/master.m3u8
+*/
