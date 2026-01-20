@@ -345,8 +345,8 @@
       // If we found a matching variant resolution, use it
       if (!CGSizeEqualToSize(closestResolution, CGSizeZero)) {
         maxResolution = closestResolution;
-        NSLog(@"[HLSPlayer] Automatic mode: viewport=%.0fx%.0f, found closest variant resolution=%.0fx%.0f",
-              viewportWidth, viewportHeight, maxResolution.width, maxResolution.height);
+        // NSLog(@"[HLSPlayer] Automatic mode: viewport=%.0fx%.0f, found closest variant resolution=%.0fx%.0f",
+        //       viewportWidth, viewportHeight, maxResolution.width, maxResolution.height);
       } else {
         // Fallback to preset tiers if variants not available
         if (viewportWidth <= 320) maxResolution = CGSizeMake(320, 240); // QVGA

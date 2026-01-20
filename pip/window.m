@@ -12,6 +12,7 @@
 #import "audioPlayer.h"
 #import "H264Decoder.h"
 #import "HLSPlayer.h"
+#import <AVFoundation/AVFoundation.h>
 #ifndef NO_AIRPLAY
 #import "airplaySender.h"
 #include "../airplay_sender/http_client.h"
@@ -42,6 +43,7 @@ INC_IMG(crop);
 INC_IMG(uncrop);
 INC_IMG(pop_in);
 INC_IMG(pop_out);
+INC_IMG(camera);
 INC_IMG(display);
 INC_IMG(windows);
 INC_IMG(hls);
@@ -102,6 +104,7 @@ static void setWindowSize(NSWindow* window, NSRect windowRect, NSRect screenRect
 @property (nonatomic) int winId;
 @property (nonatomic) int dspId;
 @property (nonatomic) int ownerPid;
+@property (nonatomic) NSString* cameraId;
 @end
 
 @implementation WindowSel
@@ -112,6 +115,7 @@ static void setWindowSize(NSWindow* window, NSRect windowRect, NSRect screenRect
   sel.winId = -1;
   sel.dspId = -1;
   sel.ownerPid = -1;
+  sel.cameraId = nil;
   return sel;
 }
 @end
@@ -653,6 +657,7 @@ static NSImage* hls_button_image_greyed(NSImage* img){
   NSSlider* hlsVolumeSlider;
   NSTextField* hlsElapsedTimeLabel;
   NSTextField* hlsTotalTimeLabel;
+  NSTextField* hlsLiveIndicator;
   NSButton* hlsPlayButton;
   NSButton* hlsPopButton;
   bool isSeeking;
@@ -675,6 +680,12 @@ static NSImage* hls_button_image_greyed(NSImage* img){
   int owner_pid;
   int display_id;
   CGDisplayStreamRef display_stream;
+  AVCaptureSession* camera_session;
+  AVCaptureDeviceInput* camera_input;
+  AVCaptureVideoDataOutput* camera_output;
+  NSString* camera_id;
+  AVCaptureDeviceFormat* camera_format;
+  AVCaptureDevicePosition camera_position;
 #if __has_include(<ScreenCaptureKit/ScreenCaptureKit.h>)
   SCStream *window_stream API_AVAILABLE(macos(12.3));
   SCStreamConfiguration *window_stream_config API_AVAILABLE(macos(12.3));
@@ -704,6 +715,11 @@ static NSImage* hls_button_image_greyed(NSImage* img){
 
   airplay_title = title;
   display_stream = NULL;
+  camera_session = nil;
+  camera_input = nil;
+  camera_output = nil;
+  camera_id = nil;
+  camera_format = nil;
 #if __has_include(<ScreenCaptureKit/ScreenCaptureKit.h>)
   if (@available(macOS 12.3, *)) {
     window_stream = nil;
@@ -824,7 +840,7 @@ static NSImage* hls_button_image_greyed(NSImage* img){
   [hlsButCont addSubview:hlsTotalTimeLabel];
 
   // Create horizontal volume slider
-  hlsVolumeSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(5, 27, 40, 20)];
+  hlsVolumeSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(5, 27, 50, 20)];
   [hlsVolumeSlider setMinValue:0.0];
   [hlsVolumeSlider setMaxValue:1.0];
   [hlsVolumeSlider setDoubleValue:1.0]; // Default to full volume
@@ -845,6 +861,20 @@ static NSImage* hls_button_image_greyed(NSImage* img){
   [hlsPlayButton setAction:@selector(togglePlayback)];
   [hlsPlayButton setTranslatesAutoresizingMaskIntoConstraints:NO];
   [hlsButCont addSubview:hlsPlayButton];
+
+  // Create live indicator label
+  hlsLiveIndicator = [[NSTextField alloc] initWithFrame:NSMakeRect(100, 30, 13, 20)];
+  [hlsLiveIndicator setStringValue:@"⬤"];
+  [hlsLiveIndicator setBezeled:NO];
+  [hlsLiveIndicator setDrawsBackground:NO];
+  [hlsLiveIndicator setEditable:NO];
+  [hlsLiveIndicator setSelectable:NO];
+  [hlsLiveIndicator setTextColor:[NSColor colorWithRed:1.0 green:0.2 blue:0.2 alpha:1.0]]; // Red color for live indicator
+  [hlsLiveIndicator setFont:[NSFont boldSystemFontOfSize:12]];
+  [hlsLiveIndicator setAlignment:NSTextAlignmentLeft];
+  [hlsLiveIndicator setTranslatesAutoresizingMaskIntoConstraints:NO];
+  [hlsLiveIndicator setHidden:YES]; // Hidden by default, shown when stream is live
+  [hlsButCont addSubview:hlsLiveIndicator];
 
   // Create pop out button for HLS
   hlsPopButton = [[HLSImageButton alloc] initWithFrame:NSMakeRect(120, 17, HLS_BUTTON_IMAGE_SIZE, HLS_BUTTON_IMAGE_SIZE)];
@@ -1087,7 +1117,7 @@ static NSImage* hls_button_image_greyed(NSImage* img){
 
 - (void)togglePlayback{
   if(isWinClosing) return;
-  if(is_airplay_session || display_id >= 0 || is_hls_session || window_stream){
+  if(is_airplay_session || display_id >= 0 || is_hls_session || window_stream || camera_id){
     is_playing = !is_playing;
     if(is_hls_session) {
       if(is_playing) [hlsPlayer play];
@@ -1209,7 +1239,7 @@ static NSImage* hls_button_image_greyed(NSImage* img){
 }
 
 - (void)onResize:(CGSize)size andAspectRatio:(CGSize) ar{
-  NSLog(@"onResize: %@ %@", NSStringFromSize(size), NSStringFromSize(ar));
+  // NSLog(@"onResize: %@ %@", NSStringFromSize(size), NSStringFromSize(ar));
   [self setAspectRatio:ar];
   if(pvc) [pvc setAspectRatio:ar];
   else{
@@ -1378,6 +1408,11 @@ static NSImage* hls_button_image_greyed(NSImage* img){
       self->isLiveStream = YES;
       NSLog(@"HLS player: Live stream detected (indefinite duration)");
 
+      // Show live indicator
+      if (self->hlsLiveIndicator) {
+        [self->hlsLiveIndicator setHidden:NO];
+      }
+
       // Enable seek slider for live streams (allows seeking within buffer window)
       if (self->hlsSeekSlider) {
         [self->hlsSeekSlider setEnabled:YES];
@@ -1417,6 +1452,11 @@ static NSImage* hls_button_image_greyed(NSImage* img){
       self->isLiveStream = NO;
       double durationSeconds = CMTimeGetSeconds(duration);
       NSLog(@"HLS player duration: %.2f seconds", durationSeconds);
+
+      // Hide live indicator
+      if (self->hlsLiveIndicator) {
+        [self->hlsLiveIndicator setHidden:YES];
+      }
 
       // Enable seek slider for non-live streams
       if (self->hlsSeekSlider) {
@@ -1521,7 +1561,7 @@ static NSImage* hls_button_image_greyed(NSImage* img){
 }
 
 - (bool)is_capturing{
-  return display_id >= 0 || window_id >= 0 || is_hls_session;
+  return display_id >= 0 || window_id >= 0 || is_hls_session || camera_id != nil;
 }
 
 #define ADD_MENU_ITEM(dest, title, actn, img, ...) {\
@@ -1540,6 +1580,8 @@ static NSImage* hls_button_image_greyed(NSImage* img){
   NSArray* screens = [NSScreen screens];
   NSMenu* display_menu = [[NSMenu alloc] init];
   NSMenu* window_menu = [[NSMenu alloc] init];
+  NSMenu* camera_menu = [[NSMenu alloc] init];
+  NSArray<AVCaptureDevice *> *cameras;
 
   #ifndef NO_AIRPLAY
   // Only show AirPlay sender options if sender is enabled
@@ -1689,6 +1731,22 @@ static NSImage* hls_button_image_greyed(NSImage* img){
     })
   }
 
+  // Add camera menu
+  cameras = [AVCaptureDevice devicesWithMediaType:AVMediaTypeVideo];
+  for(AVCaptureDevice *camera in cameras){
+    WindowSel* sel = [WindowSel getDefault];
+    sel.title = [camera localizedName];
+    sel.cameraId = [camera uniqueID];
+    ADD_MENU_ITEM(camera_menu, [camera localizedName], @selector(changeWindow:), NULL, {
+      [item setRepresentedObject:sel];
+    })
+  }
+  if(camera_menu.numberOfItems > 0){
+    ADD_MENU_ITEM(theMenu, @"Camera", nil, GET_REL_IMG(camera), {
+      [item setSubmenu:camera_menu];
+    })
+  }
+
   ADD_MENU_ITEM(theMenu, @"Stream HLS", @selector(loadHLSStream:), GET_REL_IMG(hls))
 #ifndef NO_AIRPLAY
   if (airplay_sender_enabled && [self is_capturing]) {
@@ -1754,6 +1812,46 @@ end:
     }
   }
 
+  if(camera_id && !pvc){
+    // Add resolution selection menu for camera
+    NSMenu *resolutionMenu = [[NSMenu alloc] init];
+    NSArray<NSDictionary *> *resolutions = [self getAvailableCameraResolutions:camera_id];
+    NSDictionary *currentResolution = [self getCurrentCameraResolution];
+
+    // Get the actual active format from device for accurate comparison
+    AVCaptureDevice *device = [AVCaptureDevice deviceWithUniqueID:camera_id];
+    AVCaptureDeviceFormat *activeFormat = device ? device.activeFormat : nil;
+
+    for (NSDictionary *resolution in resolutions) {
+      NSString *resolutionName = resolution[@"name"];
+      NSMenuItem *resolutionItem = [resolutionMenu addItemWithTitle:resolutionName action:@selector(selectCameraResolution:) keyEquivalent:@""];
+      [resolutionItem setTarget:self];
+      [resolutionItem setRepresentedObject:resolution];
+
+      // Mark current resolution with checkmark - compare both name and format for accuracy
+      AVCaptureDeviceFormat *resolutionFormat = resolution[@"format"];
+      BOOL isCurrent = NO;
+      if (currentResolution && activeFormat) {
+        // Compare by format object first (most accurate), then fall back to name
+        if (resolutionFormat == activeFormat || [resolutionFormat isEqual:activeFormat]) {
+          isCurrent = YES;
+        } else if ([resolutionName isEqualToString:currentResolution[@"name"]]) {
+          isCurrent = YES;
+        }
+      }
+
+      if (isCurrent) {
+        [resolutionItem setState:NSControlStateValueOn];
+      }
+    }
+
+    if (resolutionMenu.numberOfItems > 0) {
+      ADD_MENU_ITEM(theMenu, @"Camera Resolution", nil, NULL, {
+        [item setSubmenu:resolutionMenu];
+      })
+    }
+  }
+
   if(!pvc && ([self is_capturing] || is_airplay_session || is_hls_session)){
     NSSize cropSize = [imageView.renderer cropRect].size;
     bool can_crop = cropSize.width * cropSize.height == 0;
@@ -1799,7 +1897,7 @@ end:
 }
 
 - (void)setScale:(id)sender{
-  if(is_hls_session) [imageView.renderer setScale:[sender tag] * self.backingScaleFactor];
+  if(is_hls_session || camera_output) [imageView.renderer setScale:[sender tag] * self.backingScaleFactor];
   else if([self is_capturing] || is_airplay_session) [imageView.renderer setScale:[sender tag]];
 }
 
@@ -1829,13 +1927,244 @@ end:
 #endif
 }
 
+-(void)stopCameraCapture{
+  if(!camera_session) return;
+  [camera_session stopRunning];
+  camera_session = nil;
+  camera_input = nil;
+  camera_output = nil;
+  camera_id = nil;
+  camera_format = nil;
+  camera_position = AVCaptureDevicePositionUnspecified;
+}
+
+-(NSArray<NSDictionary *> *)getAvailableCameraResolutions:(NSString*)deviceId {
+  NSMutableArray *resolutions = [[NSMutableArray alloc] init];
+
+  AVCaptureDevice *device = [AVCaptureDevice deviceWithUniqueID:deviceId];
+  if(!device) {
+    return resolutions;
+  }
+
+  NSArray<AVCaptureDeviceFormat *> *formats = device.formats;
+  NSMutableSet *seenResolutions = [[NSMutableSet alloc] init];
+
+  for(AVCaptureDeviceFormat *format in formats) {
+    CMVideoDimensions dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription);
+    if(dimensions.width > 0 && dimensions.height > 0) {
+      NSString *resolutionKey = [NSString stringWithFormat:@"%dx%d", dimensions.width, dimensions.height];
+      if(![seenResolutions containsObject:resolutionKey]) {
+        [seenResolutions addObject:resolutionKey];
+        [resolutions addObject:@{
+          @"name": resolutionKey,
+          @"width": @(dimensions.width),
+          @"height": @(dimensions.height),
+          @"format": format
+        }];
+      }
+    }
+  }
+
+  // Sort by resolution (width * height) descending
+  [resolutions sortUsingComparator:^NSComparisonResult(NSDictionary *obj1, NSDictionary *obj2) {
+    int area1 = [obj1[@"width"] intValue] * [obj1[@"height"] intValue];
+    int area2 = [obj2[@"width"] intValue] * [obj2[@"height"] intValue];
+    if(area1 > area2) return NSOrderedAscending;
+    if(area1 < area2) return NSOrderedDescending;
+    return NSOrderedSame;
+  }];
+
+  return resolutions;
+}
+
+-(NSDictionary *)getCurrentCameraResolution {
+  if(!camera_id) {
+    return nil;
+  }
+
+  // Get the actual active format from the device to ensure accuracy
+  AVCaptureDevice *device = [AVCaptureDevice deviceWithUniqueID:camera_id];
+  if(!device) {
+    return nil;
+  }
+
+  AVCaptureDeviceFormat *activeFormat = device.activeFormat;
+  if(!activeFormat) {
+    return nil;
+  }
+
+  CMVideoDimensions dimensions = CMVideoFormatDescriptionGetDimensions(activeFormat.formatDescription);
+  NSString *resolutionKey = [NSString stringWithFormat:@"%dx%d", dimensions.width, dimensions.height];
+
+  // Update stored format to match actual active format
+  camera_format = activeFormat;
+
+  return @{
+    @"name": resolutionKey,
+    @"width": @(dimensions.width),
+    @"height": @(dimensions.height),
+    @"format": activeFormat
+  };
+}
+
+-(void)startCameraCapture:(NSString*)deviceId{
+  [self stopCameraCapture];
+
+  AVCaptureDevice *device = [AVCaptureDevice deviceWithUniqueID:deviceId];
+  if(!device) {
+    NSLog(@"Camera device not found: %@", deviceId);
+    return;
+  }
+
+  NSError *error = nil;
+  AVCaptureDeviceInput *input = [[AVCaptureDeviceInput alloc] initWithDevice:device error:&error];
+  if(error || !input) {
+    NSLog(@"Failed to create camera input: %@", error);
+    return;
+  }
+
+  AVCaptureSession *session = [[AVCaptureSession alloc] init];
+  session.sessionPreset = AVCaptureSessionPresetHigh;
+
+  if(![session canAddInput:input]) {
+    NSLog(@"Cannot add camera input to session");
+    return;
+  }
+  [session addInput:input];
+
+  // Store camera position to determine if we need to un-mirror
+  AVCaptureDevicePosition cameraPosition = device.position;
+
+  // Set the active format if one was previously selected
+  if(camera_format && [device.formats containsObject:camera_format]) {
+    if([device lockForConfiguration:&error]) {
+      device.activeFormat = camera_format;
+      [device unlockForConfiguration];
+    } else {
+      NSLog(@"Failed to lock device for configuration: %@", error);
+    }
+  } else if(!camera_format) {
+    // Use the highest resolution format by default
+    NSArray<NSDictionary *> *resolutions = [self getAvailableCameraResolutions:deviceId];
+    if(resolutions.count > 0) {
+      NSDictionary *highestRes = resolutions[0];
+      AVCaptureDeviceFormat *format = highestRes[@"format"];
+      if([device lockForConfiguration:&error]) {
+        device.activeFormat = format;
+        camera_format = format;
+        [device unlockForConfiguration];
+      }
+    }
+  }
+
+  AVCaptureVideoDataOutput *output = [[AVCaptureVideoDataOutput alloc] init];
+  output.videoSettings = @{(id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA)};
+
+  dispatch_queue_t queue = dispatch_queue_create("com.pip.camera", DISPATCH_QUEUE_SERIAL);
+  [output setSampleBufferDelegate:self queue:queue];
+
+  if(![session canAddOutput:output]) {
+    NSLog(@"Cannot add camera output to session");
+    return;
+  }
+  [session addOutput:output];
+
+  // Get the connection and explicitly disable mirroring
+  AVCaptureConnection *connection = [output connectionWithMediaType:AVMediaTypeVideo];
+  if(connection && connection.isVideoMirroringSupported) {
+    // Try to disable automatic mirroring
+    if([connection respondsToSelector:@selector(setAutomaticallyAdjustsVideoMirroring:)]) {
+      connection.automaticallyAdjustsVideoMirroring = NO;
+    }
+    // Note: videoMirrored is read-only, so we can't set it directly
+    // We'll handle un-mirroring in the capture output delegate if needed
+  }
+
+  camera_session = session;
+  camera_input = input;
+  camera_output = output;
+  camera_id = deviceId;
+  camera_position = cameraPosition;
+
+  // Store the current active format
+  if(!camera_format) {
+    camera_format = device.activeFormat;
+  }
+
+  [session startRunning];
+
+  // After session starts, check the connection state and configure mirroring
+  dispatch_async(dispatch_get_main_queue(), ^{
+    AVCaptureConnection *conn = [output connectionWithMediaType:AVMediaTypeVideo];
+    if(conn) {
+      NSLog(@"Camera connection: position=%ld, videoMirrored=%d, isVideoMirroringSupported=%d",
+            (long)cameraPosition, conn.videoMirrored, conn.isVideoMirroringSupported);
+      // Try to disable automatic mirroring if supported
+      if(conn.isVideoMirroringSupported && [conn respondsToSelector:@selector(setAutomaticallyAdjustsVideoMirroring:)]) {
+        conn.automaticallyAdjustsVideoMirroring = NO;
+      }
+    }
+  });
+
+  is_playing = true;
+  [self resetPlaybackSate];
+}
+
+- (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
+  if(!is_playing || isWinClosing || !camera_session) return;
+
+  CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+  if(!imageBuffer) return;
+
+  CIImage *ciImage = [CIImage imageWithCVPixelBuffer:imageBuffer];
+
+  // Check if video needs to be un-mirrored
+  // Get the connection to check actual mirroring status
+  AVCaptureConnection *videoConnection = [output connectionWithMediaType:AVMediaTypeVideo];
+  BOOL connectionSaysMirrored = videoConnection ? videoConnection.videoMirrored : NO;
+
+  // Determine if we need to un-mirror:
+  // 1. If connection reports it's mirrored, un-mirror it
+  // 2. Front-facing cameras are typically mirrored by default, so un-mirror them
+  BOOL needsUnMirror = connectionSaysMirrored || (camera_position == AVCaptureDevicePositionFront);
+
+  // Debug: log mirroring state occasionally
+  static int frameCount = 0;
+  if(frameCount++ % 180 == 0) { // Log every 180 frames (~6 seconds at 30fps)
+    NSLog(@"Camera frame: position=%ld, connectionMirrored=%d, needsUnMirror=%d",
+          (long)camera_position, connectionSaysMirrored, needsUnMirror);
+  }
+
+  // Apply un-mirror transform if needed
+  if(ciImage && needsUnMirror) {
+    CGRect extent = [ciImage extent];
+    if(extent.size.width > 0 && extent.size.height > 0) {
+      // Apply horizontal flip transform to un-mirror the image
+      // Translate to right edge, then scale X by -1 to flip horizontally
+      CGAffineTransform transform = CGAffineTransformMakeTranslation(extent.size.width, 0);
+      transform = CGAffineTransformScale(transform, -1.0, 1.0);
+      ciImage = [ciImage imageByApplyingTransform:transform];
+    }
+  }
+
+  if(ciImage) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if(self->is_playing && !self->isWinClosing) {
+        [self->imageView setImage:ciImage];
+      }
+    });
+  }
+}
+
 - (void)changeWindow:(id)sender{
   WindowSel* sel = [sender representedObject];
-  if(window_id == sel.winId && display_id == sel.dspId && !is_hls_session) return;
+  BOOL cameraMatch = (sel.cameraId == nil && camera_id == nil) || [camera_id isEqualToString:sel.cameraId];
+  if(window_id == sel.winId && display_id == sel.dspId && cameraMatch && !is_hls_session) return;
 
   [self stopTimer];
   [self stopDisplayStream];
   [self stopWindowStream];
+  [self stopCameraCapture];
   [self stopAirPlayMirroring:sender];
 
   if(hlsPlayer) {
@@ -1862,10 +2191,8 @@ end:
   display_id = sel.dspId;
   owner_pid = sel.ownerPid;
 
-  if(![self is_capturing]){
-    NSSize size = [self frame].size;
-    size.height = size.width;
-    [self onResize:size andAspectRatio:kStartRect.size];
+  if(sel.cameraId){
+    [self startCameraCapture:sel.cameraId];
   }
   else if(display_id >= 0){
     size_t width = CGDisplayPixelsWide(display_id);
@@ -2515,6 +2842,38 @@ end:
   }
 }
 
+- (void)selectCameraResolution:(id)sender {
+  if (!camera_id || !camera_session) return;
+
+  NSMenuItem *item = (NSMenuItem *)sender;
+  NSDictionary *resolution = [item representedObject];
+
+  if (resolution && resolution[@"format"]) {
+    AVCaptureDeviceFormat *format = resolution[@"format"];
+    AVCaptureDevice *device = camera_input.device;
+
+    if (!device) {
+      NSLog(@"Camera device not available");
+      return;
+    }
+
+    NSError *error = nil;
+    if ([device lockForConfiguration:&error]) {
+      // Check if the format is still available
+      if ([device.formats containsObject:format]) {
+        device.activeFormat = format;
+        camera_format = format;
+        NSLog(@"Camera resolution changed to: %@", resolution[@"name"]);
+      } else {
+        NSLog(@"Camera format no longer available: %@", resolution[@"name"]);
+      }
+      [device unlockForConfiguration];
+    } else {
+      NSLog(@"Failed to lock device for configuration: %@", error);
+    }
+  }
+}
+
 - (void)updateHLSInputViewLayout {
   if (!hlsInputView) return;
 
@@ -2819,6 +3178,7 @@ end:
   [self stopTimer];
   [self stopDisplayStream];
   [self stopWindowStream];
+  [self stopCameraCapture];
 
   window_id = -1;
   pinbutt.delegate = NULL;
@@ -2875,6 +3235,10 @@ end:
   if (hlsTotalTimeLabel) {
     [hlsTotalTimeLabel removeFromSuperview];
     hlsTotalTimeLabel = nil;
+  }
+  if (hlsLiveIndicator) {
+    [hlsLiveIndicator removeFromSuperview];
+    hlsLiveIndicator = nil;
   }
   if (hlsPlayButton) {
     [hlsPlayButton removeFromSuperview];
@@ -3305,5 +3669,5 @@ https://www.cbsnews.com/live/#x
 https://ottverse.com/free-hls-m3u8-test-urls/
 https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8
 https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8
-https://dai.google.com/linear/hls/pb/event/Sid4xiTQTkCT1SLu6rjUSQ/stream/01f14b60-c54a-4b65-a3ce-025eda9a4696:TPE/master.m3u8
+https://dai.google.com/linear/hls/pb/event/Sid4xiTQTkCT1SLu6rjUSQ/stream/d3a23d01-0ae2-4c9a-8059-2fb75fe0a2b8:TPE2/master.m3u8
 */

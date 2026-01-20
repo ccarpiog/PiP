@@ -22,6 +22,7 @@
 #if __has_include(<ScreenCaptureKit/ScreenCaptureKit.h>)
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #endif
+#import <AVFoundation/AVFoundation.h>
 
 @class VButton;
 
@@ -54,7 +55,7 @@
 - (void) setEnable:(bool) en;
 @end
 
-@interface Window : NSPanel<NSWindowDelegate, SelectionViewDelegate, ImageRendererDelegate, WindowDelegate, RootViewDelegate, ButtonDelegate, PIPViewControllerDelegate, HLSPlayerDelegate
+@interface Window : NSPanel<NSWindowDelegate, SelectionViewDelegate, ImageRendererDelegate, WindowDelegate, RootViewDelegate, ButtonDelegate, PIPViewControllerDelegate, HLSPlayerDelegate, AVCaptureVideoDataOutputSampleBufferDelegate
 #ifndef NO_AIRPLAY
 , AirPlayDiscoveryDelegate
 #endif
