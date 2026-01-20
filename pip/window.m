@@ -3029,10 +3029,11 @@ end:
   if ([inputString hasPrefix:@"curl "] || [inputString containsString:@" -H '"]) {
     // Parse curl command
     NSError *error = nil;
-    NSRegularExpression *urlRegex = [NSRegularExpression regularExpressionWithPattern:@"curl\\s+['\"]([^'\"]+)['\"]" options:0 error:&error];
+    // Match quoted strings that look like URLs (http:// or https://) anywhere in the command
+    NSRegularExpression *urlRegex = [NSRegularExpression regularExpressionWithPattern:@"['\"](https?://[^'\"]+)['\"]" options:0 error:&error];
     NSRegularExpression *headerRegex = [NSRegularExpression regularExpressionWithPattern:@"-H\\s+['\"]([^:]+):\\s*([^'\"]+)['\"]" options:0 error:&error];
 
-    // Extract URL
+    // Extract URL - find first quoted string that looks like a URL
     NSTextCheckingResult *urlMatch = [urlRegex firstMatchInString:inputString options:0 range:NSMakeRange(0, inputString.length)];
     if (urlMatch && urlMatch.numberOfRanges > 1) {
       NSString *urlString = [inputString substringWithRange:[urlMatch rangeAtIndex:1]];
