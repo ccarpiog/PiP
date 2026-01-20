@@ -2093,19 +2093,6 @@ end:
 
   [session startRunning];
 
-  // After session starts, check the connection state and configure mirroring
-  dispatch_async(dispatch_get_main_queue(), ^{
-    AVCaptureConnection *conn = [output connectionWithMediaType:AVMediaTypeVideo];
-    if(conn) {
-      NSLog(@"Camera connection: position=%ld, videoMirrored=%d, isVideoMirroringSupported=%d",
-            (long)cameraPosition, conn.videoMirrored, conn.isVideoMirroringSupported);
-      // Try to disable automatic mirroring if supported
-      if(conn.isVideoMirroringSupported && [conn respondsToSelector:@selector(setAutomaticallyAdjustsVideoMirroring:)]) {
-        conn.automaticallyAdjustsVideoMirroring = NO;
-      }
-    }
-  });
-
   is_playing = true;
   [self resetPlaybackSate];
 }
@@ -2117,35 +2104,6 @@ end:
   if(!imageBuffer) return;
 
   CIImage *ciImage = [CIImage imageWithCVPixelBuffer:imageBuffer];
-
-  // Check if video needs to be un-mirrored
-  // Get the connection to check actual mirroring status
-  AVCaptureConnection *videoConnection = [output connectionWithMediaType:AVMediaTypeVideo];
-  BOOL connectionSaysMirrored = videoConnection ? videoConnection.videoMirrored : NO;
-
-  // Determine if we need to un-mirror:
-  // 1. If connection reports it's mirrored, un-mirror it
-  // 2. Front-facing cameras are typically mirrored by default, so un-mirror them
-  BOOL needsUnMirror = connectionSaysMirrored || (camera_position == AVCaptureDevicePositionFront);
-
-  // Debug: log mirroring state occasionally
-  static int frameCount = 0;
-  if(frameCount++ % 180 == 0) { // Log every 180 frames (~6 seconds at 30fps)
-    NSLog(@"Camera frame: position=%ld, connectionMirrored=%d, needsUnMirror=%d",
-          (long)camera_position, connectionSaysMirrored, needsUnMirror);
-  }
-
-  // Apply un-mirror transform if needed
-  if(ciImage && needsUnMirror) {
-    CGRect extent = [ciImage extent];
-    if(extent.size.width > 0 && extent.size.height > 0) {
-      // Apply horizontal flip transform to un-mirror the image
-      // Translate to right edge, then scale X by -1 to flip horizontally
-      CGAffineTransform transform = CGAffineTransformMakeTranslation(extent.size.width, 0);
-      transform = CGAffineTransformScale(transform, -1.0, 1.0);
-      ciImage = [ciImage imageByApplyingTransform:transform];
-    }
-  }
 
   if(ciImage) {
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -3669,5 +3627,4 @@ https://www.cbsnews.com/live/#x
 https://ottverse.com/free-hls-m3u8-test-urls/
 https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8
 https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8
-https://dai.google.com/linear/hls/pb/event/Sid4xiTQTkCT1SLu6rjUSQ/stream/d3a23d01-0ae2-4c9a-8059-2fb75fe0a2b8:TPE2/master.m3u8
 */

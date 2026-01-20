@@ -144,6 +144,12 @@ item.keyEquivalentModifierMask = mask; \
   [app setActivationPolicy:NSApplicationActivationPolicyRegular];
   [app activateIgnoringOtherApps:YES];
   [self newWindow];
+
+  // Pre-warm camera device enumeration in background to avoid delay on first menu access
+  dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+    [AVCaptureDevice devicesWithMediaType:AVMediaTypeVideo];
+  });
+
 //  [self showPreferencePanel:self];
   #ifndef NO_AIRPLAY
   if([(NSNumber*)getPref(@"airplay") intValue] > 0){
