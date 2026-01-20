@@ -1131,6 +1131,11 @@ static NSImage* hls_button_image_greyed(NSImage* img){
   }
 }
 
+- (void)keyDown:(NSEvent *)event {
+  if ([event keyCode] == 49) [self togglePlayback]; // Space bar key code
+  else [super keyDown:event];
+}
+
 - (void)toggleNativePip{
   if(isWinClosing || isPipCLosing) return;
   if(pvc){
@@ -1153,6 +1158,7 @@ static NSImage* hls_button_image_greyed(NSImage* img){
       [hlsPlayButton setImage:hls_button_image(GET_IMG(play))];
     }
   }
+  [self mouseMoved:[self currentEvent]];
 }
 
 - (void) startPiP{
