@@ -232,14 +232,9 @@ static void request_permission(const char* perm_string){
 }
 
 static void bringWindowToForegroundModern(CGWindowID wid){
-  // Best-effort, macOS 14+ friendly approach:
-  // - Activate owning application using public API
-  // - Raise the specific window via Accessibility (requires permission)
-
   // Get owning PID from window info
   pid_t ownerPid = -1;
-  CFArrayRef windowArr = (__bridge CFArrayRef)@[@(wid)];
-  CFArrayRef infoArr = CGWindowListCreateDescriptionFromArray(windowArr);
+  CFArrayRef infoArr = CGWindowListCopyWindowInfo(kCGWindowListOptionIncludingWindow, wid);
   if(infoArr && CFArrayGetCount(infoArr) > 0) {
     CFDictionaryRef info = (CFDictionaryRef)CFArrayGetValueAtIndex(infoArr, 0);
     CFNumberRef pidNum = (CFNumberRef)CFDictionaryGetValue(info, kCGWindowOwnerPID);
@@ -250,25 +245,80 @@ static void bringWindowToForegroundModern(CGWindowID wid){
   }
   if(infoArr) CFRelease(infoArr);
 
-  if(ownerPid > 0) {
-    NSRunningApplication *app = [NSRunningApplication runningApplicationWithProcessIdentifier:ownerPid];
-    // Activate app (may still be constrained by system focus rules)
-    [app activateWithOptions:(NSApplicationActivateAllWindows | NSApplicationActivateIgnoringOtherApps)];
-  }
-
-  if(!AXIsProcessTrusted()) {
-    request_permission("Accessibility");
+  if(ownerPid <= 0) {
+    NSLog(@"bringWindowToForegroundModern: Could not get owner PID for window %d (is Screen Recording permission granted?)", wid);
     return;
   }
 
-  AXUIElementRef window_ref = GetUIElement(wid);
-  if(!window_ref) return;
+  // Get the app's AX element first
+  AXUIElementRef appRef = AXUIElementCreateApplication(ownerPid);
+  if(!appRef) {
+    NSLog(@"bringWindowToForegroundModern: Could not create AX element for PID %d", ownerPid);
+    return;
+  }
 
-  // Try to make it main/focused and raise it
+  // Find the window from the app's window list
+  AXUIElementRef window_ref = NULL;
+  CFArrayRef windows = NULL;
+  AXError err = AXUIElementCopyAttributeValues(appRef, kAXWindowsAttribute, 0, 1024, &windows);
+
+  if(err == kAXErrorSuccess && windows) {
+    CFIndex count = CFArrayGetCount(windows);
+    for(CFIndex i = 0; i < count; i++) {
+      AXUIElementRef winElement = (AXUIElementRef)CFArrayGetValueAtIndex(windows, i);
+      CGWindowID tempWid = 0;
+      if(_AXUIElementGetWindow(winElement, &tempWid) == kAXErrorSuccess && tempWid == wid) {
+        window_ref = winElement;
+        CFRetain(window_ref);
+        break;
+      }
+    }
+    if(windows) CFRelease(windows);
+  }
+
+  // Fallback to GetUIElement if we didn't find it in the window list
+  if(!window_ref) {
+    window_ref = GetUIElement(wid);
+  }
+
+  if(!window_ref) {
+    NSLog(@"bringWindowToForegroundModern: Could not find AX element for window %d", wid);
+    CFRelease(appRef);
+    return;
+  }
+
+  // Activate the app - do this AFTER finding the window
+  NSRunningApplication *app = [NSRunningApplication runningApplicationWithProcessIdentifier:ownerPid];
+  if(app) {
+    [app activateWithOptions:(NSApplicationActivateAllWindows | NSApplicationActivateIgnoringOtherApps)];
+  }
+
+  // Check if window is minimized and un-minimize it first
+  CFTypeRef minimized = NULL;
+  if(AXUIElementCopyAttributeValue(window_ref, kAXMinimizedAttribute, &minimized) == kAXErrorSuccess) {
+    if(minimized && CFBooleanGetValue((CFBooleanRef)minimized)) {
+      AXUIElementSetAttributeValue(window_ref, kAXMinimizedAttribute, kCFBooleanFalse);
+    }
+    if(minimized) CFRelease(minimized);
+  }
+
+  // Set app as frontmost
+  AXUIElementSetAttributeValue(appRef, kAXFrontmostAttribute, kCFBooleanTrue);
+
+  // Raise the window - this is the key action
+  AXError raiseErr = AXUIElementPerformAction(window_ref, kAXRaiseAction);
+  if(raiseErr != kAXErrorSuccess) {
+    NSLog(@"bringWindowToForegroundModern: AXRaiseAction failed with error %d", raiseErr);
+  }
+
+  // Set it as main window
   AXUIElementSetAttributeValue(window_ref, kAXMainAttribute, kCFBooleanTrue);
+
+  // Try to focus it
   AXUIElementSetAttributeValue(window_ref, kAXFocusedAttribute, kCFBooleanTrue);
-  AXUIElementPerformAction(window_ref, kAXRaiseAction);
+
   CFRelease(window_ref);
+  CFRelease(appRef);
 }
 
 static CGImageRef CaptureWindow(CGWindowID wid, bool hidpi){
@@ -1599,15 +1649,13 @@ static NSImage* hls_button_image_greyed(NSImage* img){
 
 - (void)onDoubleClick:(NSEvent *)theEvent{
   if(window_id < 0) return;
-  if(@available(macOS 14.0, *)) {
-    bringWindowToForegroundModern(window_id);
-    return;
+
+  if(@available(macOS 11.0, *)){
+    if(!AXIsProcessTrusted()) return request_permission("Accessibility");
   }
 
-  bringWindoToForeground(window_id);
-  if(@available(macOS 11.0, *)){
-    if(!AXIsProcessTrusted()) request_permission("Accessibility");
-  }
+  if(@available(macOS 14.0, *)) bringWindowToForegroundModern(window_id);
+  else bringWindoToForeground(window_id);
 }
 
 - (bool)is_capturing{
