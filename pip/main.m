@@ -154,8 +154,10 @@ item.keyEquivalentModifierMask = mask; \
   #ifndef NO_AIRPLAY
   if([(NSNumber*)getPref(@"airplay") intValue] > 0){
     airplay_receiver_start();
-    [NSThread sleepForTimeInterval:1.0];
-    [[AirPlayDiscovery sharedDiscovery] start];
+    if([(NSNumber*)getPref(@"airplay_sender") intValue] > 0){
+      [NSThread sleepForTimeInterval:1.0];
+      [[AirPlayDiscovery sharedDiscovery] start];
+    }
   }
   #endif
 }

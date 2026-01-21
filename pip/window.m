@@ -2381,8 +2381,10 @@ end:
   }
 
   if(infoDict){
-    CFNumberRef scaleFactorRef = (CFNumberRef)CFDictionaryGetValue(infoDict, SCStreamFrameInfoScaleFactor);
-    if(scaleFactorRef) CFNumberGetValue(scaleFactorRef, kCFNumberCGFloatType, &scaleFactor);
+    if(is_hidpi){
+      CFNumberRef scaleFactorRef = (CFNumberRef)CFDictionaryGetValue(infoDict, SCStreamFrameInfoScaleFactor);
+      if(scaleFactorRef) CFNumberGetValue(scaleFactorRef, kCFNumberCGFloatType, &scaleFactor);
+    }
 
     CFNumberRef contecntScaleFactorRef = (CFNumberRef)CFDictionaryGetValue(infoDict, SCStreamFrameInfoContentScale);
     if(contecntScaleFactorRef) CFNumberGetValue(contecntScaleFactorRef, kCFNumberCGFloatType, &contentScale);
@@ -2395,7 +2397,7 @@ end:
   size_t bufferWidth = CVPixelBufferGetWidth(imageBuffer);
   size_t bufferHeight = CVPixelBufferGetHeight(imageBuffer);
 
-  if (contentScale != 1.0 || (bufferWidth / contentRect.size.width != bufferHeight / contentRect.size.height)) {
+  if (bufferWidth / contentRect.size.width != bufferHeight / contentRect.size.height) {
     self->window_stream_config.width = (NSUInteger)(contentRect.size.width * scaleFactor / contentScale);
     self->window_stream_config.height = (NSUInteger)(contentRect.size.height * scaleFactor / contentScale);
 
@@ -2465,8 +2467,9 @@ end:
         CGRect windowFrame = targetWindow.frame;
         // Use exact window dimensions - we'll recreate the stream if size changes significantly
         NSUInteger configWidth, configHeight;
-        configWidth = (NSUInteger)(windowFrame.size.width * self.backingScaleFactor);
-        configHeight = (NSUInteger)(windowFrame.size.height * self.backingScaleFactor);
+        configWidth = windowFrame.size.width;
+        configHeight = windowFrame.size.height;
+        if(is_hidpi) configWidth *= self.backingScaleFactor, configHeight *= self.backingScaleFactor;
 
         streamConfig.width = configWidth;
         streamConfig.height = configHeight;

@@ -26,12 +26,12 @@ typedef enum{
 
 static NSArray* getPrefsArray(void){
   NSMutableArray* prefs = [NSMutableArray arrayWithArray:@[
-    OPTION(hidpi, "Use HiDPI mode", CheckBox, [NSNull null], @0, @"on supported displays"),
+    OPTION(hidpi, "Use HiDPI mode", CheckBox, [NSNull null], @1, @"on supported displays"),
     OPTION(renderer, "Display Renderer", Select, (@[@"Metal", @"Opengl"]), [NSNumber numberWithInt:DisplayRendererTypeOpenGL], [NSNull null]),
     #ifndef NO_AIRPLAY
-    OPTION(airplay, "AirPlay Receiver", CheckBox, [NSNull null], @1, @"Use PiP as Airplay receiver"),
+    OPTION(airplay, "AirPlay Receiver", CheckBox, [NSNull null], @0, @"Use PiP as Airplay receiver"),
     OPTION(airplay_scale_factor, "AirPlay Scale factor", Select, (@[@"1.00", @"2.00", @"3.00", @"Default"]), @3, [NSNull null]),
-    OPTION(airplay_sender, "AirPlay Sender", CheckBox, [NSNull null], @1, @"Enable AirPlay mirroring to other devices"),
+    OPTION(airplay_sender, "AirPlay Sender", CheckBox, [NSNull null], @0, @"Enable AirPlay mirroring to other devices"),
     OPTION(airplay_sender_quality, "Mirroring Quality", Select, (@[@"Low", @"Medium", @"High"]), @1, @"Video quality preset for mirroring"),
     OPTION(airplay_sender_audio, "Mirror Audio", CheckBox, [NSNull null], @1, @"Include audio when mirroring"),
     #endif
