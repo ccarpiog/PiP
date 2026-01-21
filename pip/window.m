@@ -50,8 +50,12 @@ INC_IMG(hls);
 INC_IMG(airplay);
 INC_IMG(airplay_stop);
 
+INC_IMG(pop_no_pad);
+INC_IMG(play_no_pad);
+INC_IMG(pause_no_pad);
+
 #define DEFAULT_TITLE @"(right click to begin)"
-#define HLS_BUTTON_IMAGE_SIZE 40
+#define HLS_BUTTON_IMAGE_SIZE 20
 
 static CGRect kStartRect = {
   .origin = {.x = 0, .y = 0,},
@@ -357,29 +361,47 @@ static NSImage* get_rel_image(NSImage* img){
 }
 
 static NSImage* hls_button_image(NSImage* img){
-  // Convert to white and resize to HLS button size
+  // Convert to white and resize to HLS button size, preserving aspect ratio
   NSImage *whiteImg = invert_image(img);
-  NSImage *resizedImage = [[NSImage alloc] initWithSize:NSMakeSize(HLS_BUTTON_IMAGE_SIZE, HLS_BUTTON_IMAGE_SIZE)];
+  NSSize originalSize = [whiteImg size];
+  NSSize targetSize = NSMakeSize(HLS_BUTTON_IMAGE_SIZE, HLS_BUTTON_IMAGE_SIZE);
+
+  // Calculate aspect ratio preserving size
+  CGFloat aspectRatio = originalSize.width / originalSize.height;
+  NSSize scaledSize;
+  if (aspectRatio > 1.0) scaledSize = NSMakeSize(targetSize.width, targetSize.width / aspectRatio);
+  else scaledSize = NSMakeSize(targetSize.height * aspectRatio, targetSize.height);
+
+  // Center the image in the target size
+  NSRect drawRect = NSMakeRect(
+    (targetSize.width - scaledSize.width) / 2.0,
+    (targetSize.height - scaledSize.height) / 2.0,
+    scaledSize.width,
+    scaledSize.height
+  );
+
+  NSImage *resizedImage = [[NSImage alloc] initWithSize:targetSize];
   [resizedImage lockFocus];
-  [whiteImg drawInRect:NSMakeRect(0, 0, HLS_BUTTON_IMAGE_SIZE, HLS_BUTTON_IMAGE_SIZE) fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1.0];
+  [[NSColor clearColor] set];
+  NSRectFill(NSMakeRect(0, 0, targetSize.width, targetSize.height));
+  [whiteImg drawInRect:drawRect fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1.0];
   [resizedImage unlockFocus];
   return resizedImage;
-}
-
-static NSImage* hls_button_image_greyed(NSImage* img){
-  // Create a greyed version (reduced opacity) for pressed state
-  NSImage *normalImage = hls_button_image(img);
-  NSImage *greyedImage = [[NSImage alloc] initWithSize:[normalImage size]];
-  [greyedImage lockFocus];
-  [normalImage drawInRect:NSMakeRect(0, 0, HLS_BUTTON_IMAGE_SIZE, HLS_BUTTON_IMAGE_SIZE) fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:0.5];
-  [greyedImage unlockFocus];
-  return greyedImage;
 }
 
 @interface HLSImageButton : NSButton
 @end
 
 @implementation HLSImageButton
+
+#if 0
+- (void)drawRect:(NSRect)dirtyRect
+{
+  self.layer.borderColor = [NSColor whiteColor].CGColor;
+  self.layer.borderWidth = 2.0;
+  [super drawRect:dirtyRect];
+}
+#endif
 
 - (void)setImage:(NSImage *)image {
   [super setImage:image];
@@ -942,10 +964,10 @@ static NSImage* hls_button_image_greyed(NSImage* img){
   [hlsButCont addSubview:hlsVolumeSlider];
 
   // Create play/pause button for HLS
-  hlsPlayButton = [[HLSImageButton alloc] initWithFrame:NSMakeRect(60, 17, HLS_BUTTON_IMAGE_SIZE, HLS_BUTTON_IMAGE_SIZE)];
+  hlsPlayButton = [[HLSImageButton alloc] initWithFrame:NSMakeRect(70, 27, HLS_BUTTON_IMAGE_SIZE, HLS_BUTTON_IMAGE_SIZE)];
   [hlsPlayButton setButtonType:NSButtonTypeMomentaryChange];
   [hlsPlayButton setBordered:NO];
-  [hlsPlayButton setImage:hls_button_image(GET_IMG(play))];
+  [hlsPlayButton setImage:hls_button_image(GET_IMG(play_no_pad))];
   [hlsPlayButton setImagePosition:NSImageOnly];
   [hlsPlayButton setTarget:self];
   [hlsPlayButton setAction:@selector(togglePlayback)];
@@ -953,24 +975,24 @@ static NSImage* hls_button_image_greyed(NSImage* img){
   [hlsButCont addSubview:hlsPlayButton];
 
   // Create live indicator label
-  hlsLiveIndicator = [[NSTextField alloc] initWithFrame:NSMakeRect(100, 30, 13, 20)];
+  hlsLiveIndicator = [[NSTextField alloc] initWithFrame:NSMakeRect(100, 31, 13, 20)];
   [hlsLiveIndicator setStringValue:@"⬤"];
   [hlsLiveIndicator setBezeled:NO];
   [hlsLiveIndicator setDrawsBackground:NO];
   [hlsLiveIndicator setEditable:NO];
   [hlsLiveIndicator setSelectable:NO];
   [hlsLiveIndicator setTextColor:[NSColor colorWithRed:1.0 green:0.2 blue:0.2 alpha:1.0]]; // Red color for live indicator
-  [hlsLiveIndicator setFont:[NSFont boldSystemFontOfSize:12]];
+  [hlsLiveIndicator setFont:[NSFont boldSystemFontOfSize:10]];
   [hlsLiveIndicator setAlignment:NSTextAlignmentLeft];
   [hlsLiveIndicator setTranslatesAutoresizingMaskIntoConstraints:NO];
   [hlsLiveIndicator setHidden:YES]; // Hidden by default, shown when stream is live
   [hlsButCont addSubview:hlsLiveIndicator];
 
   // Create pop out button for HLS
-  hlsPopButton = [[HLSImageButton alloc] initWithFrame:NSMakeRect(120, 17, HLS_BUTTON_IMAGE_SIZE, HLS_BUTTON_IMAGE_SIZE)];
+  hlsPopButton = [[HLSImageButton alloc] initWithFrame:NSMakeRect(130, 27, HLS_BUTTON_IMAGE_SIZE, HLS_BUTTON_IMAGE_SIZE)];
   [hlsPopButton setButtonType:NSButtonTypeMomentaryChange];
   [hlsPopButton setBordered:NO];
-  [hlsPopButton setImage:hls_button_image(GET_IMG(pop))];
+  [hlsPopButton setImage:hls_button_image(GET_IMG(pop_no_pad))];
   [hlsPopButton setImagePosition:NSImageOnly];
   [hlsPopButton setTarget:self];
   [hlsPopButton setAction:@selector(toggleNativePip)];
@@ -1035,7 +1057,7 @@ static NSImage* hls_button_image_greyed(NSImage* img){
 
   [self resetPlaybackSate];
 
-  [self setupNonHLSControls];
+  // [self setupNonHLSControls];
 
   return self;
 }
@@ -1240,12 +1262,12 @@ static NSImage* hls_button_image_greyed(NSImage* img){
   if(timer || is_playing) {
     [playbutt setImage:GET_IMG(pause)];
     if(hlsPlayButton) {
-      [hlsPlayButton setImage:hls_button_image(GET_IMG(pause))];
+      [hlsPlayButton setImage:hls_button_image(GET_IMG(pause_no_pad))];
     }
   } else {
     [playbutt setImage:GET_IMG(play)];
     if(hlsPlayButton) {
-      [hlsPlayButton setImage:hls_button_image(GET_IMG(play))];
+      [hlsPlayButton setImage:hls_button_image(GET_IMG(play_no_pad))];
     }
   }
   [self mouseMoved:[self currentEvent]];
