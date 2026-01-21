@@ -231,6 +231,46 @@ static void request_permission(const char* perm_string){
   [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:[NSString stringWithFormat:@"x-apple.systempreferences:com.apple.preference.security?Privacy_%s", perm_string]]];
 }
 
+static void bringWindowToForegroundModern(CGWindowID wid){
+  // Best-effort, macOS 14+ friendly approach:
+  // - Activate owning application using public API
+  // - Raise the specific window via Accessibility (requires permission)
+
+  // Get owning PID from window info
+  pid_t ownerPid = -1;
+  CFArrayRef windowArr = (__bridge CFArrayRef)@[@(wid)];
+  CFArrayRef infoArr = CGWindowListCreateDescriptionFromArray(windowArr);
+  if(infoArr && CFArrayGetCount(infoArr) > 0) {
+    CFDictionaryRef info = (CFDictionaryRef)CFArrayGetValueAtIndex(infoArr, 0);
+    CFNumberRef pidNum = (CFNumberRef)CFDictionaryGetValue(info, kCGWindowOwnerPID);
+    if(pidNum) {
+      int pidInt = -1;
+      if(CFNumberGetValue(pidNum, kCFNumberIntType, &pidInt)) ownerPid = (pid_t)pidInt;
+    }
+  }
+  if(infoArr) CFRelease(infoArr);
+
+  if(ownerPid > 0) {
+    NSRunningApplication *app = [NSRunningApplication runningApplicationWithProcessIdentifier:ownerPid];
+    // Activate app (may still be constrained by system focus rules)
+    [app activateWithOptions:(NSApplicationActivateAllWindows | NSApplicationActivateIgnoringOtherApps)];
+  }
+
+  if(!AXIsProcessTrusted()) {
+    request_permission("Accessibility");
+    return;
+  }
+
+  AXUIElementRef window_ref = GetUIElement(wid);
+  if(!window_ref) return;
+
+  // Try to make it main/focused and raise it
+  AXUIElementSetAttributeValue(window_ref, kAXMainAttribute, kCFBooleanTrue);
+  AXUIElementSetAttributeValue(window_ref, kAXFocusedAttribute, kCFBooleanTrue);
+  AXUIElementPerformAction(window_ref, kAXRaiseAction);
+  CFRelease(window_ref);
+}
+
 static CGImageRef CaptureWindow(CGWindowID wid, bool hidpi){
   CGImageRef window_image = NULL;
   CFArrayRef window_image_arr = NULL;
@@ -1559,7 +1599,11 @@ static NSImage* hls_button_image_greyed(NSImage* img){
 
 - (void)onDoubleClick:(NSEvent *)theEvent{
   if(window_id < 0) return;
-  if(@available(macOS 14.0, *)) return;
+  if(@available(macOS 14.0, *)) {
+    bringWindowToForegroundModern(window_id);
+    return;
+  }
+
   bringWindoToForeground(window_id);
   if(@available(macOS 11.0, *)){
     if(!AXIsProcessTrusted()) request_permission("Accessibility");
