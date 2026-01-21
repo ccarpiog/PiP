@@ -66,6 +66,7 @@ build_inline(){
   mkdir -p $BUILD_PATH
   APP=$BUILD_PATH/$1
   clang $MAKE_ARGS -DNO_AIRPLAY -Wl,-dead_strip pip/*.m -o $APP -fobjc-arc -fobjc-link-runtime -O3 -g0 -Wno-deprecated-declarations -F /System/Library/PrivateFrameworks \
+    -Wno-availability -Wno-nullability-completeness -mmacosx-version-min=11.0 -Ipip/priv_headers -F /System/Volumes/Data/Library/Developer/CommandLineTools/SDKs/MacOSX12.3.sdk/System/Library/Frameworks -framework ScreenCaptureKit -framework AVFoundation \
     -framework Cocoa -framework VideoToolbox -framework AudioToolbox -framework CoreMedia -framework QuartzCore -framework OpenGL -framework Metal -framework MetalKit -framework PIP -framework SkyLight
   printSize $1;
 }

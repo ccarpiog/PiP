@@ -1057,7 +1057,7 @@ static NSImage* hls_button_image(NSImage* img){
 
   [self resetPlaybackSate];
 
-  // [self setupNonHLSControls];
+  [self setupNonHLSControls];
 
   return self;
 }
@@ -2267,7 +2267,9 @@ end:
   [self stopDisplayStream];
   [self stopWindowStream];
   [self stopCameraCapture];
+  #ifndef NO_AIRPLAY
   [self stopAirPlayMirroring:sender];
+  #endif
 
   if(hlsPlayer) {
     [hlsPlayer stop];

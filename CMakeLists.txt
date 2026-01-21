@@ -1,7 +1,9 @@
 cmake_minimum_required(VERSION 3.13)
 
 SET(CMAKE_BUILD_TYPE "Debug")
-# SET(CMAKE_BUILD_TYPE "Release")
+SET(CMAKE_BUILD_TYPE "Release")
+
+set(CMAKE_OSX_DEPLOYMENT_TARGET 11.0)
 
 project(PiP)
 
