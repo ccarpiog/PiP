@@ -18,6 +18,9 @@ Always on top window preview with AirPlay receiver support (if on macOS 12+, tur
 ## Features
 * Clone any visibile window
 * Clone multiple active display
+* Camera preview
+* HLS streaming
+* Airplay sender (unstable)
 * Crop the preview
 * Auto and manual resize preserving the aspect ratio
 * Multiple window preview from same process, ```cmd+n``` to open and ```cmd+w``` to close
