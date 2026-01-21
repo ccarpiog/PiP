@@ -1598,13 +1598,13 @@ static NSImage* hls_button_image_greyed(NSImage* img){
 
   if(is_airplay_session) goto end;
 
-  // if(@available(macOS 11.0, *)){
-  //   if(!CGPreflightScreenCaptureAccess()){
-  //     CGRequestScreenCaptureAccess();
-  //     request_permission("ScreenCapture");
-  //     return;
-  //   }
-  // }
+  if(@available(macOS 11.0, *)){
+    if(!CGPreflightScreenCaptureAccess()){
+      CGRequestScreenCaptureAccess();
+      request_permission("ScreenCapture");
+      return;
+    }
+  }
 
 //  [theMenu addItem:[NSMenuItem separatorItem]];
 
@@ -1726,13 +1726,13 @@ static NSImage* hls_button_image_greyed(NSImage* img){
   }
 
   if(display_menu.numberOfItems > 0){
-    ADD_MENU_ITEM(theMenu, @"Select Display", nil, GET_REL_IMG(display), {
+    ADD_MENU_ITEM(theMenu, @"Display", nil, GET_REL_IMG(display), {
       [item setSubmenu:display_menu];
     })
   }
 
   if(window_menu.numberOfItems > 0){
-    ADD_MENU_ITEM(theMenu, @"Select Window", nil, GET_REL_IMG(windows), {
+    ADD_MENU_ITEM(theMenu, @"Window", nil, GET_REL_IMG(windows), {
       [item setSubmenu:window_menu];
     })
   }
@@ -2022,10 +2022,34 @@ end:
     return;
   }
 
+  // Ensure camera permission is granted or request it if needed
+  AVAuthorizationStatus authStatus = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo];
+  if(authStatus == AVAuthorizationStatusDenied || authStatus == AVAuthorizationStatusRestricted) {
+    request_permission("Camera");
+    return;
+  }
+  if(authStatus == AVAuthorizationStatusNotDetermined) {
+    [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo completionHandler:^(BOOL granted) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        if(granted) {
+          [self startCameraCapture:deviceId];
+        } else {
+          request_permission("Camera");
+        }
+      });
+    }];
+    return;
+  }
+
   NSError *error = nil;
   AVCaptureDeviceInput *input = [[AVCaptureDeviceInput alloc] initWithDevice:device error:&error];
   if(error || !input) {
     NSLog(@"Failed to create camera input: %@", error);
+    // If creation failed due to missing authorization, prompt user
+    AVAuthorizationStatus status = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo];
+    if(status == AVAuthorizationStatusDenied || status == AVAuthorizationStatusRestricted) {
+      request_permission("Camera");
+    }
     return;
   }
 
@@ -3631,6 +3655,7 @@ static void sender_state_callback(sender_state_t state, const char *error, void 
 
 /*
 https://www.cbsnews.com/live/#x
+https://hlsjs.video-dev.org/demo/
 https://ottverse.com/free-hls-m3u8-test-urls/
 https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8
 https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8
