@@ -13,6 +13,7 @@
 #import "H264Decoder.h"
 #import "HLSPlayer.h"
 #import <AVFoundation/AVFoundation.h>
+#import <CoreImage/CoreImage.h>
 #ifndef NO_AIRPLAY
 #import "airplaySender.h"
 #include "../airplay_sender/http_client.h"
@@ -1297,6 +1298,7 @@ static NSImage* hls_button_image(NSImage* img){
   pvc = nil;
   [self setContentViewController:nil];
   [self setContentViewController:nvc];
+  if(shouldClose || CGSizeEqualToSize(CGSizeZero, rect.size)) return;
   [self setAspectRatio:rect.size];
   [self setFrame:rect display:YES];
   [self setIsVisible:true];
