@@ -359,6 +359,22 @@ NSObject* getPrefOption(NSString* key){
     return NO;
 }
 
+/**
+ * Returns the height for a specific row in the preferences table.
+ * Adds extra spacing after certain rows to create visual groups.
+ * @param tableView The table view
+ * @param row The row index
+ * @return The height for the row
+ */
+- (CGFloat)tableView:(NSTableView *)tableView heightOfRow:(NSInteger)row{
+  CGFloat baseHeight = 26;
+  // Add 12pt padding below Display Renderer, Default Display, and Display Names rows
+  if(row == 1 || row == 2 || row == 3){
+    return baseHeight + 12;
+  }
+  return baseHeight;
+} // End of tableView:heightOfRow:
+
 - (void)windowDidBecomeKey:(NSNotification *)notification{
   [[NSApplication sharedApplication] activateIgnoringOtherApps:YES];
 }
@@ -375,7 +391,9 @@ NSObject* getPrefOption(NSString* key){
 @property (nonatomic, strong) NSTableView* tableView;
 @property (nonatomic, strong) NSMutableArray* displayData;
 @property (nonatomic, strong) NSMutableArray* textFields;
+@property (nonatomic, strong) NSButton* okButton;
 - (void)refreshPreferencesWindow;
+- (void)completeTabOrder;
 @end
 
 @implementation DisplayNamesPanel
@@ -410,21 +428,21 @@ NSObject* getPrefOption(NSString* key){
   [rootView addSubview:scrollView];
 
   // Create OK button
-  NSButton* okButton = [NSButton buttonWithTitle:@"OK" target:self action:@selector(onOKClick:)];
-  okButton.translatesAutoresizingMaskIntoConstraints = false;
-  okButton.bezelStyle = NSBezelStyleRounded;
-  okButton.keyEquivalent = @"\r"; // Enter key
-  [rootView addSubview:okButton];
+  _okButton = [NSButton buttonWithTitle:@"OK" target:self action:@selector(onOKClick:)];
+  _okButton.translatesAutoresizingMaskIntoConstraints = false;
+  _okButton.bezelStyle = NSBezelStyleRounded;
+  _okButton.keyEquivalent = @"\r"; // Enter key
+  [rootView addSubview:_okButton];
 
   // Layout constraints
   [rootView addConstraint:[NSLayoutConstraint constraintWithItem:scrollView attribute:NSLayoutAttributeLeft relatedBy:NSLayoutRelationEqual toItem:rootView attribute:NSLayoutAttributeLeft multiplier:1 constant:0]];
   [rootView addConstraint:[NSLayoutConstraint constraintWithItem:scrollView attribute:NSLayoutAttributeRight relatedBy:NSLayoutRelationEqual toItem:rootView attribute:NSLayoutAttributeRight multiplier:1 constant:0]];
   [rootView addConstraint:[NSLayoutConstraint constraintWithItem:scrollView attribute:NSLayoutAttributeTop relatedBy:NSLayoutRelationEqual toItem:rootView attribute:NSLayoutAttributeTop multiplier:1 constant:0]];
-  [rootView addConstraint:[NSLayoutConstraint constraintWithItem:scrollView attribute:NSLayoutAttributeBottom relatedBy:NSLayoutRelationEqual toItem:okButton attribute:NSLayoutAttributeTop multiplier:1 constant:-10]];
+  [rootView addConstraint:[NSLayoutConstraint constraintWithItem:scrollView attribute:NSLayoutAttributeBottom relatedBy:NSLayoutRelationEqual toItem:_okButton attribute:NSLayoutAttributeTop multiplier:1 constant:-10]];
 
-  [rootView addConstraint:[NSLayoutConstraint constraintWithItem:okButton attribute:NSLayoutAttributeRight relatedBy:NSLayoutRelationEqual toItem:rootView attribute:NSLayoutAttributeRight multiplier:1 constant:-15]];
-  [rootView addConstraint:[NSLayoutConstraint constraintWithItem:okButton attribute:NSLayoutAttributeBottom relatedBy:NSLayoutRelationEqual toItem:rootView attribute:NSLayoutAttributeBottom multiplier:1 constant:-10]];
-  [rootView addConstraint:[NSLayoutConstraint constraintWithItem:okButton attribute:NSLayoutAttributeWidth relatedBy:NSLayoutRelationEqual toItem:nil attribute:NSLayoutAttributeNotAnAttribute multiplier:1 constant:80]];
+  [rootView addConstraint:[NSLayoutConstraint constraintWithItem:_okButton attribute:NSLayoutAttributeRight relatedBy:NSLayoutRelationEqual toItem:rootView attribute:NSLayoutAttributeRight multiplier:1 constant:-15]];
+  [rootView addConstraint:[NSLayoutConstraint constraintWithItem:_okButton attribute:NSLayoutAttributeBottom relatedBy:NSLayoutRelationEqual toItem:rootView attribute:NSLayoutAttributeBottom multiplier:1 constant:-10]];
+  [rootView addConstraint:[NSLayoutConstraint constraintWithItem:_okButton attribute:NSLayoutAttributeWidth relatedBy:NSLayoutRelationEqual toItem:nil attribute:NSLayoutAttributeNotAnAttribute multiplier:1 constant:80]];
 
   _tableView = [[NSTableView alloc] init];
   _tableView.frame = rootView.bounds;
@@ -453,14 +471,24 @@ NSObject* getPrefOption(NSString* key){
   NSPoint point = NSMakePoint(screenSize.width/2 - windowSize.width/2, screenSize.height/2 - windowSize.height/2);
   [self setFrameOrigin:point];
 
+  // Complete tab order after table is set up
+  [_tableView reloadData];
+  [self completeTabOrder];
+
   return self;
 } // End of init()
 
 /**
- * Called when OK button is clicked. Closes the panel.
+ * Called when OK button is clicked. Commits pending edits and closes the panel.
  * @param sender The button that was clicked
  */
 - (void)onOKClick:(NSButton*)sender{
+  // Commit any pending text field edits by resigning first responder
+  [self makeFirstResponder:nil];
+
+  // Update preferences window immediately
+  [self refreshPreferencesWindow];
+
   [self close];
 } // End of onOKClick()
 
@@ -505,6 +533,30 @@ NSObject* getPrefOption(NSString* key){
   } // End of loop through screens
 } // End of loadDisplayData()
 
+/**
+ * Completes the circular tab order for keyboard navigation.
+ * Chain: first text field -> ... -> last text field -> OK button -> first text field
+ */
+- (void)completeTabOrder{
+  if(_textFields.count == 0) return;
+
+  // Find first and last valid text fields
+  NSTextField* firstField = nil;
+  NSTextField* lastField = nil;
+
+  for(NSUInteger i = 0; i < _textFields.count; i++){
+    if(_textFields[i] != [NSNull null]){
+      if(!firstField) firstField = _textFields[i];
+      lastField = _textFields[i];
+    }
+  } // End of loop through text fields
+
+  if(firstField && lastField && _okButton){
+    [lastField setNextKeyView:_okButton];
+    [_okButton setNextKeyView:firstField];
+  }
+} // End of completeTabOrder()
+
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView{
   return _displayData.count;
 }
@@ -515,12 +567,24 @@ NSObject* getPrefOption(NSString* key){
 
   if([tableColumn.identifier isEqual:@"systemName"]){
     NSTextField* text = [[NSTextField alloc] init];
-    text.stringValue = display[@"systemName"];
+    NSString* systemName = display[@"systemName"];
+    if(systemName && systemName.length > 0){
+      text.stringValue = systemName;
+      text.textColor = [NSColor secondaryLabelColor];
+    } else {
+      text.stringValue = @"(Unknown display)";
+      // Use italic font for placeholder
+      NSFont* currentFont = [NSFont systemFontOfSize:[NSFont systemFontSize]];
+      NSFontDescriptor* italicDescriptor = [currentFont.fontDescriptor fontDescriptorWithSymbolicTraits:NSFontDescriptorTraitItalic];
+      if(italicDescriptor){
+        text.font = [NSFont fontWithDescriptor:italicDescriptor size:currentFont.pointSize];
+      }
+      text.textColor = [NSColor tertiaryLabelColor]; // More muted than secondaryLabelColor
+    }
     text.editable = false;
     text.drawsBackground = false;
     text.bordered = false;
     text.translatesAutoresizingMaskIntoConstraints = false;
-    text.textColor = [NSColor secondaryLabelColor];
     [cell addSubview:text];
     [cell addConstraint:[NSLayoutConstraint constraintWithItem:text attribute:NSLayoutAttributeCenterY relatedBy:NSLayoutRelationEqual toItem:cell attribute:NSLayoutAttributeCenterY multiplier:1 constant:0]];
     [cell addConstraint:[NSLayoutConstraint constraintWithItem:text attribute:NSLayoutAttributeLeft relatedBy:NSLayoutRelationEqual toItem:cell attribute:NSLayoutAttributeLeft multiplier:1 constant:8]];
@@ -528,7 +592,8 @@ NSObject* getPrefOption(NSString* key){
   } else if([tableColumn.identifier isEqual:@"customName"]){
     NSTextField* textField = [[NSTextField alloc] init];
     textField.stringValue = display[@"customName"];
-    textField.placeholderString = display[@"systemName"];
+    NSString* systemName = display[@"systemName"];
+    textField.placeholderString = (systemName && systemName.length > 0) ? systemName : @"Enter display name";
     textField.editable = YES;
     textField.selectable = YES;
     textField.bezeled = YES;
