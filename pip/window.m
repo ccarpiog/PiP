@@ -1752,8 +1752,7 @@ static NSImage* hls_button_image(NSImage* img){
 //    NSLog(@"%@", dict);
     CGDirectDisplayID did = [dict[@"NSScreenNumber"] intValue];
 
-    NSString* windowTitle = [NSString stringWithFormat:@"Display %u", did];
-    if (@available(macOS 10.15, *)) windowTitle = [NSString stringWithFormat:@"%@", [screen localizedName]];
+    NSString* windowTitle = getDisplayNameForId(did);
 
     WindowSel* sel = [WindowSel getDefault];
     sel.title = windowTitle;
