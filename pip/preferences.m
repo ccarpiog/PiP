@@ -8,12 +8,31 @@
 
 #import "preferences.h"
 #import <QuartzCore/QuartzCore.h>
+#import <IOKit/graphics/IOGraphicsLib.h>
 #if __has_include(<ScreenCaptureKit/ScreenCaptureKit.h>)
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #endif
 
 Preferences* global_pref = nil;
 static NSPanel* displayNamesPanel = nil;
+
+/**
+ * Gets a stable identifier for a display using EDID data (vendor, model, serial).
+ * This identifier remains stable across reboots unlike CGDirectDisplayID.
+ * Note: We only use CoreGraphics APIs here to avoid WindowServer deadlocks
+ * that can occur when calling NSScreen APIs during display reconfiguration.
+ * @param displayId The CGDirectDisplayID of the display
+ * @return A stable identifier string
+ */
+NSString* getStableDisplayIdentifier(CGDirectDisplayID displayId){
+  uint32_t vendorId = CGDisplayVendorNumber(displayId);
+  uint32_t modelId = CGDisplayModelNumber(displayId);
+  uint32_t serialNum = CGDisplaySerialNumber(displayId);
+
+  // Use EDID data (vendor-model-serial) as stable identifier
+  // This is safe to call anytime and doesn't touch WindowServer/NSScreen
+  return [NSString stringWithFormat:@"%u-%u-%u", vendorId, modelId, serialNum];
+} // End of getStableDisplayIdentifier()
 
 /**
  * Gets the custom display name for a given display ID.
@@ -23,8 +42,17 @@ static NSPanel* displayNamesPanel = nil;
 NSString* getCustomDisplayNameForId(CGDirectDisplayID displayId){
   NSDictionary* customNames = (NSDictionary*)getPref(@"display_custom_names");
   if(!customNames) return nil;
-  NSString* key = [NSString stringWithFormat:@"%u", displayId];
-  return customNames[key];
+
+  // First try stable identifier
+  NSString* stableKey = getStableDisplayIdentifier(displayId);
+  if(stableKey){
+    NSString* name = customNames[stableKey];
+    if(name) return name;
+  }
+
+  // Fallback to old format for backwards compatibility
+  NSString* legacyKey = [NSString stringWithFormat:@"%u", displayId];
+  return customNames[legacyKey];
 } // End of getCustomDisplayNameForId()
 
 /**
@@ -39,7 +67,7 @@ NSString* getDisplayNameForId(CGDirectDisplayID displayId){
   // Find the screen and return its localized name
   for(NSScreen* screen in [NSScreen screens]){
     NSDictionary* dict = [screen deviceDescription];
-    CGDirectDisplayID did = [dict[@"NSScreenNumber"] intValue];
+    CGDirectDisplayID did = [dict[@"NSScreenNumber"] unsignedIntValue];
     if(did == displayId){
       if (@available(macOS 10.15, *)) return [screen localizedName];
       return [NSString stringWithFormat:@"Display %u", displayId];
@@ -50,18 +78,30 @@ NSString* getDisplayNameForId(CGDirectDisplayID displayId){
 
 /**
  * Sets a custom display name for a given display ID.
+ * Uses stable identifier (EDID-based) to persist names across reboots.
  * @param displayId The CGDirectDisplayID of the display
  * @param name The custom name to set (empty string to clear)
  */
 void setCustomDisplayName(CGDirectDisplayID displayId, NSString* name){
   NSDictionary* existingNames = (NSDictionary*)[[NSUserDefaults standardUserDefaults] objectForKey:@"display_custom_names"];
   NSMutableDictionary* customNames = existingNames ? [existingNames mutableCopy] : [[NSMutableDictionary alloc] init];
-  NSString* key = [NSString stringWithFormat:@"%u", displayId];
+
+  // Use stable identifier instead of display ID
+  NSString* stableKey = getStableDisplayIdentifier(displayId);
+  if(!stableKey){
+    stableKey = [NSString stringWithFormat:@"%u", displayId];
+  }
+
+  // Remove any legacy entry with just the display ID
+  NSString* legacyKey = [NSString stringWithFormat:@"%u", displayId];
+  if(![stableKey isEqualToString:legacyKey]){
+    [customNames removeObjectForKey:legacyKey];
+  }
 
   if(name && name.length > 0){
-    customNames[key] = name;
+    customNames[stableKey] = name;
   } else {
-    [customNames removeObjectForKey:key];
+    [customNames removeObjectForKey:stableKey];
   }
 
   [[NSUserDefaults standardUserDefaults] setObject:customNames forKey:@"display_custom_names"];
@@ -76,7 +116,7 @@ NSArray* getDisplayList(void){
   [displays addObject:@{@"name": @"Ninguno", @"id": @-1}];
   for(NSScreen* screen in [NSScreen screens]){
     NSDictionary* dict = [screen deviceDescription];
-    CGDirectDisplayID did = [dict[@"NSScreenNumber"] intValue];
+    CGDirectDisplayID did = [dict[@"NSScreenNumber"] unsignedIntValue];
     NSString* name = getDisplayNameForId(did);
     [displays addObject:@{@"name": name, @"id": [NSNumber numberWithUnsignedInt:did]}];
   } // End of loop through screens
@@ -519,7 +559,7 @@ NSObject* getPrefOption(NSString* key){
   _displayData = [[NSMutableArray alloc] init];
   for(NSScreen* screen in [NSScreen screens]){
     NSDictionary* dict = [screen deviceDescription];
-    CGDirectDisplayID did = [dict[@"NSScreenNumber"] intValue];
+    CGDirectDisplayID did = [dict[@"NSScreenNumber"] unsignedIntValue];
     NSString* systemName = @"Display";
     if (@available(macOS 10.15, *)) systemName = [screen localizedName];
     NSString* customName = getCustomDisplayNameForId(did);
