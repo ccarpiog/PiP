@@ -87,7 +87,7 @@ static WindowManagerPanel* windowManagerPanel = nil;
 
   INIT_MENU(@"File");
   ADD_ITEM(@"New", newWindow, @"n");
-  ADD_ITEM_MASK(@"Clonar ventana", cloneCurrentWindow, @"n", NSEventModifierFlagCommand | NSEventModifierFlagShift);
+  ADD_ITEM_MASK(@"Clone Window", cloneCurrentWindow, @"n", NSEventModifierFlagCommand | NSEventModifierFlagShift);
   ADD_ITEM(@"Stream HLS", loadHLSStream:, @"l");
   ADD_ITEM(@"Click Through", clickThrough:, @"c");
   ADD_ITEM(@"Close", performClose:, @"w");
@@ -120,12 +120,12 @@ static WindowManagerPanel* windowManagerPanel = nil;
   ADD_ITEM(@"Bring All to Front", arrangeInFront:, @"");
   ADD_ITEM(@"Toggle Native PiP", toggleNativePip, @"p");
   ADD_SEP();
-  ADD_ITEM(@"Organizar en cuadr\u00edcula", arrangeInGrid, @"g");
-  ADD_ITEM(@"Cascada", arrangeInCascade, @"");
+  ADD_ITEM(@"Arrange in Grid", arrangeInGrid, @"g");
+  ADD_ITEM(@"Cascade", arrangeInCascade, @"");
   ADD_SEP();
-  ADD_ITEM_MASK(@"Cerrar todas las ventanas", closeAllWindows, @"w", NSEventModifierFlagCommand | NSEventModifierFlagOption);
+  ADD_ITEM_MASK(@"Close All Windows", closeAllWindows, @"w", NSEventModifierFlagCommand | NSEventModifierFlagOption);
   ADD_SEP();
-  ADD_ITEM_MASK(@"Administrador de ventanas", showWindowManager, @"m", NSEventModifierFlagCommand | NSEventModifierFlagOption);
+  ADD_ITEM_MASK(@"Window Manager", showWindowManager, @"m", NSEventModifierFlagCommand | NSEventModifierFlagOption);
 
   [app setMainMenu:menubar];
   [app setWindowsMenu:menu];
@@ -173,10 +173,10 @@ static WindowManagerPanel* windowManagerPanel = nil;
     if(!maxWindowsAlertShown){
       maxWindowsAlertShown = true;
       NSAlert* alert = [[NSAlert alloc] init];
-      [alert setMessageText:@"L\u00edmite de ventanas alcanzado"];
-      [alert setInformativeText:[NSString stringWithFormat:@"Se alcanz\u00f3 el m\u00e1ximo de %ld ventanas. Puedes cambiar el l\u00edmite en Preferencias.", (long)maxWindows]];
+      [alert setMessageText:@"Window limit reached"];
+      [alert setInformativeText:[NSString stringWithFormat:@"Maximum of %ld windows reached. You can change the limit in Preferences.", (long)maxWindows]];
       [alert addButtonWithTitle:@"OK"];
-      [alert addButtonWithTitle:@"Preferencias..."];
+      [alert addButtonWithTitle:@"Preferences..."];
       NSModalResponse response = [alert runModal];
       if(response == NSAlertSecondButtonReturn){
         [self showPreferencePanel:self];
@@ -191,8 +191,8 @@ static WindowManagerPanel* windowManagerPanel = nil;
   if(!performanceWarningShown && (NSInteger)currentWindows.count >= 5){
     performanceWarningShown = true;
     NSAlert* alert = [[NSAlert alloc] init];
-    [alert setMessageText:@"Advertencia de rendimiento"];
-    [alert setInformativeText:@"Muchas ventanas abiertas. El rendimiento puede verse afectado."];
+    [alert setMessageText:@"Performance warning"];
+    [alert setInformativeText:@"Many windows open. Performance may be affected."];
     [alert addButtonWithTitle:@"OK"];
     [alert setAlertStyle:NSAlertStyleInformational];
     [alert runModal];
@@ -234,10 +234,10 @@ static WindowManagerPanel* windowManagerPanel = nil;
     if(!maxWindowsAlertShown){
       maxWindowsAlertShown = true;
       NSAlert* alert = [[NSAlert alloc] init];
-      [alert setMessageText:@"L\u00edmite de ventanas alcanzado"];
-      [alert setInformativeText:[NSString stringWithFormat:@"Se alcanz\u00f3 el m\u00e1ximo de %ld ventanas. Puedes cambiar el l\u00edmite en Preferencias.", (long)maxWindows]];
+      [alert setMessageText:@"Window limit reached"];
+      [alert setInformativeText:[NSString stringWithFormat:@"Maximum of %ld windows reached. You can change the limit in Preferences.", (long)maxWindows]];
       [alert addButtonWithTitle:@"OK"];
-      [alert addButtonWithTitle:@"Preferencias..."];
+      [alert addButtonWithTitle:@"Preferences..."];
       NSModalResponse response = [alert runModal];
       if(response == NSAlertSecondButtonReturn){
         [self showPreferencePanel:self];
@@ -267,10 +267,10 @@ static WindowManagerPanel* windowManagerPanel = nil;
   BOOL cloned = [sourceWindow cloneSourceToWindow:(Window*)newWin];
   if(!cloned){
     // If clone failed (camera or no source), show alert for camera
-    if([[sourceWindow sourceType] isEqualToString:@"C\u00e1mara"]){
+    if([[sourceWindow sourceType] isEqualToString:@"Camera"]){
       NSAlert* alert = [[NSAlert alloc] init];
-      [alert setMessageText:@"No se puede clonar"];
-      [alert setInformativeText:@"Las fuentes de c\u00e1mara no se pueden compartir entre ventanas. Selecciona otra fuente con clic derecho."];
+      [alert setMessageText:@"Cannot clone"];
+      [alert setInformativeText:@"Camera sources cannot be shared between windows. Right-click to select a different source."];
       [alert addButtonWithTitle:@"OK"];
       [alert runModal];
     }
@@ -516,7 +516,7 @@ static WindowManagerPanel* windowManagerPanel = nil;
   self.delegate = self;
   self.level = NSFloatingWindowLevel;
   self.collectionBehavior = NSWindowCollectionBehaviorManaged | NSWindowCollectionBehaviorParticipatesInCycle;
-  [self setTitle:@"Administrador de ventanas"];
+  [self setTitle:@"Window Manager"];
   self.minSize = NSMakeSize(300, 150);
 
   _appDelegate = delegate;
@@ -548,7 +548,7 @@ static WindowManagerPanel* windowManagerPanel = nil;
   _tableView.target = self;
 
   NSTableColumn* nameCol = [[NSTableColumn alloc] initWithIdentifier:@"name"];
-  nameCol.title = @"Fuente";
+  nameCol.title = @"Source";
   nameCol.width = 200;
   [_tableView addTableColumn:nameCol];
 
@@ -605,7 +605,7 @@ static WindowManagerPanel* windowManagerPanel = nil;
   text.translatesAutoresizingMaskIntoConstraints = false;
 
   if([tableColumn.identifier isEqual:@"name"]){
-    text.stringValue = [win title] ?: @"Sin t\u00edtulo";
+    text.stringValue = [win title] ?: @"Untitled";
     text.lineBreakMode = NSLineBreakByTruncatingTail;
   } else if([tableColumn.identifier isEqual:@"type"]){
     text.stringValue = [win sourceType];
@@ -613,9 +613,9 @@ static WindowManagerPanel* windowManagerPanel = nil;
   } else if([tableColumn.identifier isEqual:@"status"]){
     NSString* status = [win sourceStatus];
     text.stringValue = status;
-    if([status isEqualToString:@"Activo"]){
+    if([status isEqualToString:@"Active"]){
       text.textColor = [NSColor systemGreenColor];
-    } else if([status isEqualToString:@"Sin fuente"]){
+    } else if([status isEqualToString:@"No source"]){
       text.textColor = [NSColor tertiaryLabelColor];
     } else {
       text.textColor = [NSColor systemOrangeColor];

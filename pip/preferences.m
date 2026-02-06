@@ -113,7 +113,7 @@ void setCustomDisplayName(CGDirectDisplayID displayId, NSString* name){
  */
 NSArray* getDisplayList(void){
   NSMutableArray* displays = [[NSMutableArray alloc] init];
-  [displays addObject:@{@"name": @"Ninguno", @"id": @-1}];
+  [displays addObject:@{@"name": @"None", @"id": @-1}];
   for(NSScreen* screen in [NSScreen screens]){
     NSDictionary* dict = [screen deviceDescription];
     CGDirectDisplayID did = [dict[@"NSScreenNumber"] unsignedIntValue];
@@ -153,8 +153,8 @@ static NSArray* getPrefsArray(void){
     OPTION(wfilter_floating, "Exclude windows", CheckBox, [NSNull null], @1, @"that are floating"),
     OPTION(wfilter_desktop_elemnts, "Exclude windows", CheckBox, [NSNull null], @1, @"that are desktop elements"),
     OPTION(mouse_capture, "Show mouse cursor", CheckBox, [NSNull null], @0, @"when pipping screen"),
-    OPTION(new_window_behavior, "Nueva ventana", Select, (@[@"En blanco con pista", @"Clonar ventana actual"]), @0, [NSNull null]),
-    OPTION(max_windows, "M\u00e1ximo de ventanas", Select, (@[@"2", @"4", @"6", @"8", @"10"]), @3, [NSNull null]),
+    OPTION(new_window_behavior, "New Window", Select, (@[@"Blank with hint", @"Clone current window"]), @0, [NSNull null]),
+    OPTION(max_windows, "Max Windows", Select, (@[@"2", @"4", @"6", @"8", @"10"]), @3, [NSNull null]),
   ]];
 
   // Add ScreenCaptureKit option only on macOS 12.3+

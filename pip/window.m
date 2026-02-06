@@ -1094,7 +1094,7 @@ static void displayReconfigurationCallback(CGDirectDisplayID display, CGDisplayC
     sourceHintOverlay.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
 
     hintLabel = [[NSTextField alloc] init];
-    hintLabel.stringValue = @"Clic derecho para seleccionar fuente";
+    hintLabel.stringValue = @"Right-click to select source";
     hintLabel.editable = NO;
     hintLabel.selectable = NO;
     hintLabel.bezeled = NO;
@@ -2513,7 +2513,7 @@ end:
 
     display_stream = CGDisplayStreamCreateWithDispatchQueue(display_id, width, height, kCVPixelFormatType_32BGRA,  (__bridge CFDictionaryRef)opts, dispatch_get_main_queue(), ^(CGDisplayStreamFrameStatus status, uint64_t displayTime, IOSurfaceRef frameSurface, CGDisplayStreamUpdateRef updateRef) {
       if(status == kCGDisplayStreamFrameStatusStopped){
-        if(!self->isWinClosing) [self showDisconnectOverlay:@"Pantalla desconectada"];
+        if(!self->isWinClosing) [self showDisconnectOverlay:@"Display disconnected"];
         return;
       }
       if(status != kCGDisplayStreamFrameStatusFrameComplete || !self->is_playing || self->isWinClosing) return;
@@ -2561,7 +2561,7 @@ end:
  * Stops all capture, resets source state, and displays the overlay with the given message
  * plus a hint to right-click for a new source.
  * Must be called on the main thread.
- * @param message The disconnect reason to display (e.g. "Pantalla desconectada")
+ * @param message The disconnect reason to display (e.g. "Display disconnected")
  */
 - (void)showDisconnectOverlay:(NSString*)message{
   if(isWinClosing) return;
@@ -2579,7 +2579,7 @@ end:
   [imageView setHidden:YES];
 
   if(sourceHintOverlay && hintLabel){
-    hintLabel.stringValue = [NSString stringWithFormat:@"%@\nClic derecho para seleccionar fuente", message];
+    hintLabel.stringValue = [NSString stringWithFormat:@"%@\nRight-click to select source", message];
     [sourceHintOverlay setHidden:NO];
   }
 
@@ -2593,7 +2593,7 @@ end:
  */
 - (void)handleDisplayDisconnected:(CGDirectDisplayID)displayId{
   if(display_id >= 0 && (CGDirectDisplayID)display_id == displayId){
-    [self showDisconnectOverlay:@"Pantalla desconectada"];
+    [self showDisconnectOverlay:@"Display disconnected"];
   }
 } // End of handleDisplayDisconnected:
 
@@ -2606,7 +2606,7 @@ end:
   if(!camera_session) return;
   dispatch_async(dispatch_get_main_queue(), ^{
     if(self->isWinClosing) return;
-    [self showDisconnectOverlay:@"C\u00e1mara no disponible"];
+    [self showDisconnectOverlay:@"Camera unavailable"];
   });
 } // End of cameraSessionError:
 
@@ -2641,26 +2641,26 @@ end:
 } // End of cloneSourceToWindow:
 
 /**
- * Returns a localized string describing the type of source this window is capturing.
- * @return Source type string (e.g. "Pantalla", "Ventana", "C\u00e1mara", "HLS", "AirPlay")
+ * Returns a string describing the type of source this window is capturing.
+ * @return Source type string (e.g. "Display", "Window", "Camera", "HLS", "AirPlay")
  */
 - (NSString*) sourceType{
   if(is_airplay_session) return @"AirPlay";
   if(is_hls_session) return @"HLS";
-  if(camera_id != nil) return @"C\u00e1mara";
-  if(display_id >= 0) return @"Pantalla";
-  if(window_id >= 0) return @"Ventana";
-  return @"Ninguno";
+  if(camera_id != nil) return @"Camera";
+  if(display_id >= 0) return @"Display";
+  if(window_id >= 0) return @"Window";
+  return @"None";
 } // End of sourceType
 
 /**
- * Returns a localized string describing the current status of this window's capture.
- * @return Status string (e.g. "Activo", "Pausado", "Desconectado")
+ * Returns a string describing the current status of this window's capture.
+ * @return Status string (e.g. "Active", "Paused", "No source")
  */
 - (NSString*) sourceStatus{
-  if(![self is_capturing] && !is_hls_session && !is_airplay_session) return @"Sin fuente";
-  if(is_playing) return @"Activo";
-  return @"Pausado";
+  if(![self is_capturing] && !is_hls_session && !is_airplay_session) return @"No source";
+  if(is_playing) return @"Active";
+  return @"Paused";
 } // End of sourceStatus
 
 
@@ -2671,7 +2671,7 @@ end:
   NSLog(@"ScreenCaptureKit stream stopped%@", error ? [NSString stringWithFormat:@" with error: %@", error] : @"");
   dispatch_async(dispatch_get_main_queue(), ^{
     if(self->isWinClosing) return;
-    [self showDisconnectOverlay:@"Ventana cerrada"];
+    [self showDisconnectOverlay:@"Window closed"];
   });
 }
 
