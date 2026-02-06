@@ -800,17 +800,10 @@ static NSImage* hls_button_image(NSImage* img){
   AVCaptureDeviceFormat* camera_format;
   AVCaptureDevicePosition camera_position;
 
-  // Camera audio capture and playback
-  AVCaptureAudioDataOutput* camera_audio_output;
-  AudioUnit camera_audio_unit;
+  // Camera audio capture and playback using AVCaptureAudioPreviewOutput
+  AVCaptureAudioPreviewOutput* camera_audio_preview;
   bool camera_audio_enabled;
   bool camera_has_microphone;
-
-  // Ring buffer for camera audio
-  uint8_t camera_audio_buffer[64 * 1024];
-  UInt32 camera_audio_write_idx;
-  UInt32 camera_audio_read_idx;
-  AudioStreamBasicDescription camera_audio_format;
 #if __has_include(<ScreenCaptureKit/ScreenCaptureKit.h>)
   SCStream *window_stream API_AVAILABLE(macos(12.3));
   SCStreamConfiguration *window_stream_config API_AVAILABLE(macos(12.3));
@@ -847,13 +840,9 @@ static NSImage* hls_button_image(NSImage* img){
   camera_format = nil;
 
   // Initialize camera audio variables
-  camera_audio_output = nil;
-  camera_audio_unit = NULL;
+  camera_audio_preview = nil;
   camera_audio_enabled = true;  // Enabled by default
   camera_has_microphone = false;
-  camera_audio_write_idx = 0;
-  camera_audio_read_idx = 0;
-  memset(&camera_audio_format, 0, sizeof(camera_audio_format));
 #if __has_include(<ScreenCaptureKit/ScreenCaptureKit.h>)
   if (@available(macOS 12.3, *)) {
     window_stream = nil;
@@ -2099,242 +2088,14 @@ end:
 #pragma mark - Camera Audio Methods
 
 /**
- * Checks microphone permission status and requests access if needed.
- * @param completionHandler Called with YES if permission granted, NO otherwise
+ * Stops camera capture and cleans up resources.
  */
--(void)checkMicrophonePermission:(void(^)(BOOL granted))completionHandler {
-  AVAuthorizationStatus authStatus = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
-
-  switch(authStatus) {
-    case AVAuthorizationStatusAuthorized:
-      completionHandler(YES);
-      break;
-    case AVAuthorizationStatusDenied:
-    case AVAuthorizationStatusRestricted:
-      NSLog(@"Microphone permission denied or restricted");
-      completionHandler(NO);
-      break;
-    case AVAuthorizationStatusNotDetermined:
-      [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio completionHandler:^(BOOL granted) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-          completionHandler(granted);
-        });
-      }];
-      break;
-  }
-} // End of checkMicrophonePermission:
-
-/**
- * AudioUnit render callback for camera audio playback.
- * Reads PCM data from the ring buffer and outputs to speakers.
- */
-static OSStatus CameraAudioRenderCallback(void *inRefCon,
-                                          AudioUnitRenderActionFlags *ioActionFlags,
-                                          const AudioTimeStamp *inTimeStamp,
-                                          UInt32 inBusNumber,
-                                          UInt32 inNumberFrames,
-                                          AudioBufferList *ioData) {
-  Window *window = (__bridge Window *)inRefCon;
-
-  // Clear output buffers first
-  for(UInt32 i = 0; i < ioData->mNumberBuffers; ++i) {
-    memset(ioData->mBuffers[i].mData, 0, ioData->mBuffers[i].mDataByteSize);
-  }
-
-  // Check if we have data available
-  if(window->camera_audio_read_idx == window->camera_audio_write_idx) {
-    return noErr;  // No data available
-  }
-
-  UInt32 bufferLen = sizeof(window->camera_audio_buffer);
-  UInt32 dataAvailable;
-  if(window->camera_audio_write_idx > window->camera_audio_read_idx) {
-    dataAvailable = window->camera_audio_write_idx - window->camera_audio_read_idx;
-  } else {
-    dataAvailable = bufferLen - window->camera_audio_read_idx + window->camera_audio_write_idx;
-  }
-
-  UInt32 bytesPerFrame = window->camera_audio_format.mBytesPerFrame;
-  if(bytesPerFrame == 0) bytesPerFrame = 4;  // Default: 16-bit stereo
-
-  UInt32 bytesRequested = bytesPerFrame * inNumberFrames;
-  UInt32 bytesToCopy = (bytesRequested < dataAvailable) ? bytesRequested : dataAvailable;
-
-  // Copy data from ring buffer to output (may need to wrap)
-  uint8_t *outBuffer = (uint8_t *)ioData->mBuffers[0].mData;
-  UInt32 firstChunkSize = bufferLen - window->camera_audio_read_idx;
-  if(firstChunkSize > bytesToCopy) firstChunkSize = bytesToCopy;
-
-  memcpy(outBuffer, window->camera_audio_buffer + window->camera_audio_read_idx, firstChunkSize);
-
-  if(firstChunkSize < bytesToCopy) {
-    // Wrap around
-    memcpy(outBuffer + firstChunkSize, window->camera_audio_buffer, bytesToCopy - firstChunkSize);
-    window->camera_audio_read_idx = bytesToCopy - firstChunkSize;
-  } else {
-    window->camera_audio_read_idx += firstChunkSize;
-    if(window->camera_audio_read_idx >= bufferLen) {
-      window->camera_audio_read_idx = 0;
-    }
-  }
-
-  return noErr;
-} // End of CameraAudioRenderCallback()
-
-/**
- * Sets up the AudioUnit for camera audio playback.
- * @param format The audio stream format from the camera
- */
--(void)setupCameraAudioUnit:(AudioStreamBasicDescription)format {
-  if(camera_audio_unit) {
-    [self teardownCameraAudioUnit];
-  }
-
-  camera_audio_format = format;
-  camera_audio_write_idx = 0;
-  camera_audio_read_idx = 0;
-
-  AudioComponentDescription outputUnitDescription = {
-    .componentType         = kAudioUnitType_Output,
-    .componentSubType      = kAudioUnitSubType_DefaultOutput,
-    .componentManufacturer = kAudioUnitManufacturer_Apple
-  };
-
-  AudioComponent outputComponent = AudioComponentFindNext(NULL, &outputUnitDescription);
-  if(!outputComponent) {
-    NSLog(@"Failed to find audio output component");
-    return;
-  }
-
-  OSStatus status = AudioComponentInstanceNew(outputComponent, &camera_audio_unit);
-  if(status != noErr) {
-    NSLog(@"AudioComponentInstanceNew failed: %d", (int)status);
-    return;
-  }
-
-  status = AudioUnitInitialize(camera_audio_unit);
-  if(status != noErr) {
-    NSLog(@"AudioUnitInitialize failed: %d", (int)status);
-    AudioComponentInstanceDispose(camera_audio_unit);
-    camera_audio_unit = NULL;
-    return;
-  }
-
-  status = AudioUnitSetProperty(camera_audio_unit,
-                                kAudioUnitProperty_StreamFormat,
-                                kAudioUnitScope_Input,
-                                0,
-                                &format,
-                                sizeof(format));
-  if(status != noErr) {
-    NSLog(@"AudioUnitSetProperty StreamFormat failed: %d", (int)status);
-  }
-
-  AURenderCallbackStruct callbackInfo = {
-    .inputProc       = CameraAudioRenderCallback,
-    .inputProcRefCon = (__bridge void *)(self),
-  };
-
-  AudioUnitSetProperty(camera_audio_unit,
-                       kAudioUnitProperty_SetRenderCallback,
-                       kAudioUnitScope_Global,
-                       0,
-                       &callbackInfo,
-                       sizeof(callbackInfo));
-
-  AudioOutputUnitStart(camera_audio_unit);
-  NSLog(@"Camera audio unit started: sampleRate=%.0f, channels=%u, bitsPerChannel=%u",
-        format.mSampleRate, format.mChannelsPerFrame, format.mBitsPerChannel);
-} // End of setupCameraAudioUnit:
-
-/**
- * Tears down the camera audio unit.
- */
--(void)teardownCameraAudioUnit {
-  if(camera_audio_unit) {
-    AudioOutputUnitStop(camera_audio_unit);
-    AudioUnitUninitialize(camera_audio_unit);
-    AudioComponentInstanceDispose(camera_audio_unit);
-    camera_audio_unit = NULL;
-  }
-  memset(&camera_audio_format, 0, sizeof(camera_audio_format));
-} // End of teardownCameraAudioUnit
-
-/**
- * Processes audio sample buffer from camera and writes to ring buffer for playback.
- * @param sampleBuffer The audio sample buffer from AVCaptureAudioDataOutput
- */
--(void)processCameraAudioSampleBuffer:(CMSampleBufferRef)sampleBuffer {
-  // Get audio format if not already set
-  CMFormatDescriptionRef formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer);
-  if(!formatDesc) return;
-
-  const AudioStreamBasicDescription *asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc);
-  if(!asbd) return;
-
-  // Setup audio unit on first sample (when we know the format)
-  if(!camera_audio_unit) {
-    AudioStreamBasicDescription outputFormat = *asbd;
-
-    // Ensure we have a valid PCM format for output
-    if(outputFormat.mFormatID != kAudioFormatLinearPCM) {
-      NSLog(@"Unsupported audio format: %u", (unsigned int)outputFormat.mFormatID);
-      return;
-    }
-
-    [self setupCameraAudioUnit:outputFormat];
-  }
-
-  // Get audio data from sample buffer
-  CMBlockBufferRef blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer);
-  if(!blockBuffer) return;
-
-  size_t totalLength = 0;
-  char *dataPointer = NULL;
-  OSStatus status = CMBlockBufferGetDataPointer(blockBuffer, 0, NULL, &totalLength, &dataPointer);
-  if(status != noErr || !dataPointer || totalLength == 0) return;
-
-  UInt32 bufferLen = sizeof(camera_audio_buffer);
-
-  // Calculate space available in ring buffer
-  UInt32 spaceAvailable;
-  if(camera_audio_write_idx >= camera_audio_read_idx) {
-    spaceAvailable = bufferLen - camera_audio_write_idx + camera_audio_read_idx - 1;
-  } else {
-    spaceAvailable = camera_audio_read_idx - camera_audio_write_idx - 1;
-  }
-
-  if(totalLength > spaceAvailable) {
-    // Buffer overflow - advance read pointer to make room (drop oldest data)
-    UInt32 overflow = (UInt32)totalLength - spaceAvailable;
-    camera_audio_read_idx = (camera_audio_read_idx + overflow) % bufferLen;
-  }
-
-  // Copy data to ring buffer (may need to wrap)
-  UInt32 firstChunkSize = bufferLen - camera_audio_write_idx;
-  if(firstChunkSize > totalLength) firstChunkSize = (UInt32)totalLength;
-
-  memcpy(camera_audio_buffer + camera_audio_write_idx, dataPointer, firstChunkSize);
-
-  if(firstChunkSize < totalLength) {
-    // Wrap around
-    memcpy(camera_audio_buffer, dataPointer + firstChunkSize, totalLength - firstChunkSize);
-    camera_audio_write_idx = (UInt32)(totalLength - firstChunkSize);
-  } else {
-    camera_audio_write_idx += firstChunkSize;
-    if(camera_audio_write_idx >= bufferLen) {
-      camera_audio_write_idx = 0;
-    }
-  }
-} // End of processCameraAudioSampleBuffer:
-
 -(void)stopCameraCapture{
   if(!camera_session) return;
   [camera_session stopRunning];
 
-  // Clean up audio
-  [self teardownCameraAudioUnit];
-  camera_audio_output = nil;
+  // Clean up audio preview
+  camera_audio_preview = nil;
   camera_has_microphone = false;
 
   camera_session = nil;
@@ -2511,71 +2272,77 @@ static OSStatus CameraAudioRenderCallback(void *inRefCon,
     // We'll handle un-mirroring in the capture output delegate if needed
   }
 
-  // Set up audio capture if enabled and camera has microphone
+  // Set up audio preview if enabled - uses AVCaptureAudioPreviewOutput for automatic format handling
   camera_has_microphone = false;
-  camera_audio_output = nil;
+  camera_audio_preview = nil;
 
   if(camera_audio_enabled) {
-    // Try to find an audio device associated with this camera
-    // Many cameras have built-in mics that appear as separate audio devices
-    AVCaptureDevice *audioDevice = nil;
-    NSArray<AVCaptureDevice *> *audioDevices = [AVCaptureDevice devicesWithMediaType:AVMediaTypeAudio];
-    for(AVCaptureDevice *audioD in audioDevices) {
-      // Match by name or manufacturer (webcam mics often share these)
-      if([audioD.localizedName containsString:device.localizedName] ||
-         [audioD.manufacturer isEqualToString:device.manufacturer]) {
-        audioDevice = audioD;
-        break;
-      }
-    } // End of loop through audio devices
-
-    // If no matching audio device found, check if we have a default microphone
-    if(!audioDevice && audioDevices.count > 0) {
-      audioDevice = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeAudio];
+    // Check microphone permission
+    AVAuthorizationStatus audioAuthStatus = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
+    
+    __block BOOL micPermissionGranted = (audioAuthStatus == AVAuthorizationStatusAuthorized);
+    
+    if(audioAuthStatus == AVAuthorizationStatusNotDetermined) {
+      // Request permission synchronously using a semaphore
+      dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+      [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio completionHandler:^(BOOL granted) {
+        micPermissionGranted = granted;
+        dispatch_semaphore_signal(semaphore);
+      }];
+      dispatch_semaphore_wait(semaphore, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
     }
 
-    if(audioDevice) {
-      camera_has_microphone = true;
-
-      [self checkMicrophonePermission:^(BOOL granted) {
-        if(!granted) {
-          NSLog(@"Microphone permission not granted, camera audio disabled");
-          self->camera_has_microphone = false;
-          return;
+    if(micPermissionGranted) {
+      // Try to find an audio device associated with this camera
+      AVCaptureDevice *audioDevice = nil;
+      NSArray<AVCaptureDevice *> *audioDevices = [AVCaptureDevice devicesWithMediaType:AVMediaTypeAudio];
+      
+      for(AVCaptureDevice *audioD in audioDevices) {
+        if([audioD.localizedName containsString:device.localizedName] ||
+           [audioD.manufacturer isEqualToString:device.manufacturer]) {
+          audioDevice = audioD;
+          NSLog(@"Found matching audio device: %@ for camera: %@", audioD.localizedName, device.localizedName);
+          break;
         }
+      }
 
-        // Add audio input
+      // If no matching audio device found, use the default microphone
+      if(!audioDevice && audioDevices.count > 0) {
+        audioDevice = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeAudio];
+        NSLog(@"Using default audio device: %@", audioDevice.localizedName);
+      }
+
+      if(audioDevice) {
         NSError *audioError = nil;
         AVCaptureDeviceInput *audioInput = [[AVCaptureDeviceInput alloc] initWithDevice:audioDevice error:&audioError];
+        
         if(audioError || !audioInput) {
           NSLog(@"Failed to create audio input: %@", audioError);
-          self->camera_has_microphone = false;
-          return;
-        }
-
-        if(![self->camera_session canAddInput:audioInput]) {
+        } else if(![session canAddInput:audioInput]) {
           NSLog(@"Cannot add audio input to camera session");
-          self->camera_has_microphone = false;
-          return;
+        } else {
+          [session addInput:audioInput];
+
+          // Use AVCaptureAudioPreviewOutput for automatic audio playback
+          // This handles all format conversion automatically
+          AVCaptureAudioPreviewOutput *audioPreview = [[AVCaptureAudioPreviewOutput alloc] init];
+          audioPreview.volume = 1.0;  // Full volume
+          audioPreview.outputDeviceUniqueID = nil;  // Use default output device
+
+          if(![session canAddOutput:audioPreview]) {
+            NSLog(@"Cannot add audio preview output to camera session");
+          } else {
+            [session addOutput:audioPreview];
+            camera_audio_preview = audioPreview;
+            camera_has_microphone = true;
+            NSLog(@"Camera audio preview configured for device: %@", audioDevice.localizedName);
+          }
         }
-        [self->camera_session addInput:audioInput];
-
-        // Add audio output
-        AVCaptureAudioDataOutput *audioOutput = [[AVCaptureAudioDataOutput alloc] init];
-        dispatch_queue_t audioQueue = dispatch_queue_create("com.pip.camera.audio", DISPATCH_QUEUE_SERIAL);
-        [audioOutput setSampleBufferDelegate:self queue:audioQueue];
-
-        if(![self->camera_session canAddOutput:audioOutput]) {
-          NSLog(@"Cannot add audio output to camera session");
-          return;
-        }
-        [self->camera_session addOutput:audioOutput];
-        self->camera_audio_output = audioOutput;
-
-        NSLog(@"Camera audio capture enabled for device: %@", audioDevice.localizedName);
-      }];
+      }
+    } else {
+      NSLog(@"Microphone permission not granted, camera audio disabled");
     }
-  } // End of audio capture setup
+  } // End of audio configuration
 
   camera_session = session;
   camera_input = input;
@@ -2588,6 +2355,7 @@ static OSStatus CameraAudioRenderCallback(void *inRefCon,
     camera_format = device.activeFormat;
   }
 
+  // Start session after all inputs/outputs are configured
   [session startRunning];
 
   is_playing = true;
@@ -2597,14 +2365,11 @@ static OSStatus CameraAudioRenderCallback(void *inRefCon,
 - (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
   if(!is_playing || isWinClosing || !camera_session) return;
 
-  // Check if this is audio or video output
-  if(output == camera_audio_output && camera_audio_enabled) {
-    // Audio processing
-    [self processCameraAudioSampleBuffer:sampleBuffer];
+  // Only handle video output - audio is handled automatically by AVCaptureAudioPreviewOutput
+  if(![output isKindOfClass:[AVCaptureVideoDataOutput class]]) {
     return;
   }
 
-  // Video processing
   CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
   if(!imageBuffer) return;
 
@@ -3354,14 +3119,14 @@ static OSStatus CameraAudioRenderCallback(void *inRefCon,
     NSString *currentCameraId = [camera_id copy];
     [self startCameraCapture:currentCameraId];
   } else if(!camera_audio_enabled) {
-    // Stop audio playback
-    [self teardownCameraAudioUnit];
-    // Remove audio output from session if present
-    if(camera_audio_output && camera_session) {
-      [camera_session beginConfiguration];
-      [camera_session removeOutput:camera_audio_output];
-      [camera_session commitConfiguration];
-      camera_audio_output = nil;
+    // Mute audio by setting volume to 0, or remove output
+    if(camera_audio_preview) {
+      camera_audio_preview.volume = 0.0;
+    }
+  } else {
+    // Unmute audio
+    if(camera_audio_preview) {
+      camera_audio_preview.volume = 1.0;
     }
   }
 
