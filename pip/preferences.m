@@ -681,6 +681,38 @@ NSObject* getPrefOption(NSString* key){
   }
 } // End of controlTextDidEndEditing()
 
+/**
+ * Handles special key commands in text fields, including Shift+Tab for backward navigation.
+ * @param control The control sending the command
+ * @param textView The field editor
+ * @param commandSelector The command selector
+ * @return YES if the command was handled, NO otherwise
+ */
+- (BOOL)control:(NSControl *)control textView:(NSTextView *)textView doCommandBySelector:(SEL)commandSelector{
+  if(commandSelector == @selector(insertBacktab:)){
+    // Shift+Tab pressed - move to previous field
+    NSTextField* currentField = (NSTextField*)control;
+    NSInteger currentRow = currentField.tag;
+
+    // Find previous text field
+    for(NSInteger i = currentRow - 1; i >= 0; i--){
+      if(i < (NSInteger)_textFields.count && _textFields[i] != [NSNull null]){
+        NSTextField* prevField = _textFields[i];
+        [self makeFirstResponder:prevField];
+        return YES;
+      }
+    } // End of loop searching for previous field
+
+    // If at first field, wrap to OK button
+    if(_okButton){
+      [self makeFirstResponder:_okButton];
+      return YES;
+    }
+    return YES;
+  }
+  return NO;
+} // End of control:textView:doCommandBySelector:
+
 - (nullable NSTableRowView *)tableView:(NSTableView *)tableView rowViewForRow:(NSInteger)row{
   NSTableRowView* rowView = [[NSTableRowView alloc] init];
   rowView.emphasized = false;
