@@ -3389,7 +3389,8 @@ end:
 }
 
 - (void)windowWillClose:(NSNotification *)notification{
-//  NSLog(@"windowWillClose");
+  // Terminate the app when the window is closed
+  [[NSApplication sharedApplication] terminate:nil];
 }
 
 - (void)windowDidBecomeKey:(NSNotification *)notification{
