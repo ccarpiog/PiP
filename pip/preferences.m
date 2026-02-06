@@ -153,6 +153,8 @@ static NSArray* getPrefsArray(void){
     OPTION(wfilter_floating, "Exclude windows", CheckBox, [NSNull null], @1, @"that are floating"),
     OPTION(wfilter_desktop_elemnts, "Exclude windows", CheckBox, [NSNull null], @1, @"that are desktop elements"),
     OPTION(mouse_capture, "Show mouse cursor", CheckBox, [NSNull null], @0, @"when pipping screen"),
+    OPTION(new_window_behavior, "Nueva ventana", Select, (@[@"En blanco con pista", @"Clonar ventana actual"]), @0, [NSNull null]),
+    OPTION(max_windows, "M\u00e1ximo de ventanas", Select, (@[@"2", @"4", @"6", @"8", @"10"]), @3, [NSNull null]),
   ]];
 
   // Add ScreenCaptureKit option only on macOS 12.3+
@@ -199,7 +201,7 @@ NSObject* getPrefOption(NSString* key){
 
 -(id)init{
   self = [super
-          initWithContentRect:NSMakeRect(0, 0, 450, 230)
+          initWithContentRect:NSMakeRect(0, 0, 450, 290)
           styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskNonactivatingPanel
           backing:NSBackingStoreBuffered defer:YES
   ];
@@ -421,7 +423,25 @@ NSObject* getPrefOption(NSString* key){
 
 - (void)windowWillClose:(NSNotification *)notification{
   global_pref = nil;
-}
+
+  // If no PiP windows remain, quit the app
+  BOOL hasPipWindows = NO;
+  Class windowClass = NSClassFromString(@"Window");
+  if(windowClass){
+    for(NSWindow* window in [[NSApplication sharedApplication] windows]){
+      if([window isKindOfClass:windowClass]){
+        hasPipWindows = YES;
+        break;
+      }
+    } // End of loop checking for remaining PiP windows
+  }
+  if(!hasPipWindows){
+    // Defer to next runloop tick to avoid re-entrancy with window close
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [[NSApplication sharedApplication] terminate:nil];
+    });
+  }
+} // End of windowWillClose:
 
 @end
 

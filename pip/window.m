@@ -420,6 +420,17 @@ static NSImage* hls_button_image(NSImage* img){
 }
 @end
 
+/**
+ * A view that passes through all mouse events to views behind it.
+ * Used for the source hint overlay so right-click menus still work.
+ */
+@interface PassthroughView : NSView
+@end
+
+@implementation PassthroughView
+- (NSView *)hitTest:(NSPoint)point { return nil; }
+@end
+
 @interface NSImage (ImageAdditions)
 +(NSImage *)swatchWithColor:(NSColor *)color size:(NSSize)size;
 @end
@@ -735,6 +746,28 @@ static NSImage* hls_button_image(NSImage* img){
 
 @end
 
+// Forward declaration for methods called from C callbacks
+@interface Window (DisconnectHandling)
+- (void)handleDisplayDisconnected:(CGDirectDisplayID)displayId;
+@end
+
+/**
+ * C callback for display reconfiguration events.
+ * Called when a display is added, removed, or reconfigured.
+ * The userInfo parameter is a pointer to the Window instance.
+ * @param display The display that was reconfigured
+ * @param flags The type of reconfiguration
+ * @param userInfo Pointer to the Window instance
+ */
+static void displayReconfigurationCallback(CGDirectDisplayID display, CGDisplayChangeSummaryFlags flags, void* userInfo){
+  if(flags & kCGDisplayRemoveFlag){
+    Window* window = (__bridge Window*)userInfo;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [window handleDisplayDisconnected:display];
+    });
+  }
+} // End of displayReconfigurationCallback()
+
 @implementation Window{
   NSTimer* timer;
   NSView* butCont;
@@ -782,6 +815,9 @@ static NSImage* hls_button_image(NSImage* img){
 
   NSTimer* mouse_timer;
   bool mouse_timer_rerun;
+
+  NSView* sourceHintOverlay;
+  NSTextField* hintLabel;
 
   NSString* airplay_title;
   bool was_floating;
@@ -877,6 +913,7 @@ static NSImage* hls_button_image(NSImage* img){
   self.movable = YES;
   self.delegate = self;
   self.releasedWhenClosed = NO;
+  self.hidesOnDeactivate = NO;
   self.level = NSFloatingWindowLevel;
   self.movableByWindowBackground = YES;
   self.titlebarAppearsTransparent = true;
@@ -1048,6 +1085,32 @@ static NSImage* hls_button_image(NSImage* img){
   [[hlsButCont.widthAnchor constraintEqualToConstant:hlsButContRect.size.width] setActive:true];
   [[hlsButCont.centerXAnchor constraintEqualToAnchor:rootView.centerXAnchor constant:-hlsButContRect.origin.x] setActive:true];
 
+  // Create source hint overlay for blank windows
+  if(!is_airplay_session){
+    sourceHintOverlay = [[PassthroughView alloc] initWithFrame:kStartRect];
+    sourceHintOverlay.wantsLayer = YES;
+    sourceHintOverlay.layer.backgroundColor = [[NSColor colorWithWhite:0.0 alpha:0.6] CGColor];
+    sourceHintOverlay.layer.cornerRadius = 10;
+    sourceHintOverlay.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+
+    hintLabel = [[NSTextField alloc] init];
+    hintLabel.stringValue = @"Clic derecho para seleccionar fuente";
+    hintLabel.editable = NO;
+    hintLabel.selectable = NO;
+    hintLabel.bezeled = NO;
+    hintLabel.drawsBackground = NO;
+    hintLabel.textColor = [NSColor whiteColor];
+    hintLabel.font = [NSFont systemFontOfSize:14 weight:NSFontWeightMedium];
+    hintLabel.alignment = NSTextAlignmentCenter;
+    hintLabel.translatesAutoresizingMaskIntoConstraints = NO;
+
+    [sourceHintOverlay addSubview:hintLabel];
+    [sourceHintOverlay addConstraint:[NSLayoutConstraint constraintWithItem:hintLabel attribute:NSLayoutAttributeCenterX relatedBy:NSLayoutRelationEqual toItem:sourceHintOverlay attribute:NSLayoutAttributeCenterX multiplier:1 constant:0]];
+    [sourceHintOverlay addConstraint:[NSLayoutConstraint constraintWithItem:hintLabel attribute:NSLayoutAttributeCenterY relatedBy:NSLayoutRelationEqual toItem:sourceHintOverlay attribute:NSLayoutAttributeCenterY multiplier:1 constant:0]];
+
+    [rootView addSubview:sourceHintOverlay positioned:NSWindowAbove relativeTo:nil];
+  } // End of source hint overlay setup
+
   NSTrackingAreaOptions nstopts = NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways | NSTrackingInVisibleRect | NSTrackingAssumeInside;
   nstopts |= NSTrackingMouseMoved;
   NSTrackingArea *nstArea = [[NSTrackingArea alloc] initWithRect:[[self contentView] frame] options:nstopts owner:self userInfo:nil];
@@ -1087,6 +1150,9 @@ static NSImage* hls_button_image(NSImage* img){
       } // End of loop through displays
     }
   } // End of if not airplay session
+
+  // Register for display reconfiguration events (display disconnect)
+  CGDisplayRegisterReconfigurationCallback(displayReconfigurationCallback, (__bridge void*)self);
 
   return self;
 }
@@ -2092,6 +2158,12 @@ end:
  */
 -(void)stopCameraCapture{
   if(!camera_session) return;
+
+  // Remove notification observers before stopping
+  [[NSNotificationCenter defaultCenter] removeObserver:self name:AVCaptureSessionRuntimeErrorNotification object:camera_session];
+  [[NSNotificationCenter defaultCenter] removeObserver:self name:AVCaptureSessionDidStopRunningNotification object:camera_session];
+  [[NSNotificationCenter defaultCenter] removeObserver:self name:AVCaptureDeviceWasDisconnectedNotification object:nil];
+
   [camera_session stopRunning];
 
   // Clean up audio preview
@@ -2355,6 +2427,11 @@ end:
     camera_format = device.activeFormat;
   }
 
+  // Register for camera disconnect/error notifications
+  [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(cameraSessionError:) name:AVCaptureSessionRuntimeErrorNotification object:session];
+  [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(cameraSessionError:) name:AVCaptureSessionDidStopRunningNotification object:session];
+  [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(cameraSessionError:) name:AVCaptureDeviceWasDisconnectedNotification object:device];
+
   // Start session after all inputs/outputs are configured
   [session startRunning];
 
@@ -2435,6 +2512,10 @@ end:
     };
 
     display_stream = CGDisplayStreamCreateWithDispatchQueue(display_id, width, height, kCVPixelFormatType_32BGRA,  (__bridge CFDictionaryRef)opts, dispatch_get_main_queue(), ^(CGDisplayStreamFrameStatus status, uint64_t displayTime, IOSurfaceRef frameSurface, CGDisplayStreamUpdateRef updateRef) {
+      if(status == kCGDisplayStreamFrameStatusStopped){
+        if(!self->isWinClosing) [self showDisconnectOverlay:@"Pantalla desconectada"];
+        return;
+      }
       if(status != kCGDisplayStreamFrameStatusFrameComplete || !self->is_playing || self->isWinClosing) return;
       [self->imageView setImage:[CIImage imageWithIOSurface:frameSurface]];
     });
@@ -2468,16 +2549,130 @@ end:
 //  [imageView setImage:nil];
   [imageView setHidden:![self is_capturing]];
   [self setOwner:sel.owner withTitle:sel.title];
+
+  // Hide or show source hint overlay based on capture state
+  if(sourceHintOverlay){
+    [sourceHintOverlay setHidden:[self is_capturing]];
+  }
 }
+
+/**
+ * Shows the disconnect overlay with a message explaining why the source was lost.
+ * Stops all capture, resets source state, and displays the overlay with the given message
+ * plus a hint to right-click for a new source.
+ * Must be called on the main thread.
+ * @param message The disconnect reason to display (e.g. "Pantalla desconectada")
+ */
+- (void)showDisconnectOverlay:(NSString*)message{
+  if(isWinClosing) return;
+
+  [self stopTimer];
+  [self stopDisplayStream];
+  [self stopWindowStream];
+  [self stopCameraCapture];
+
+  window_id = -1;
+  display_id = -1;
+  is_playing = false;
+  [self resetPlaybackSate];
+
+  [imageView setHidden:YES];
+
+  if(sourceHintOverlay && hintLabel){
+    hintLabel.stringValue = [NSString stringWithFormat:@"%@\nClic derecho para seleccionar fuente", message];
+    [sourceHintOverlay setHidden:NO];
+  }
+
+  [self setOwner:nil withTitle:message];
+} // End of showDisconnectOverlay:
+
+/**
+ * Called when a display is physically disconnected.
+ * If this window was capturing that display, shows a disconnect overlay.
+ * @param displayId The ID of the disconnected display
+ */
+- (void)handleDisplayDisconnected:(CGDirectDisplayID)displayId{
+  if(display_id >= 0 && (CGDirectDisplayID)display_id == displayId){
+    [self showDisconnectOverlay:@"Pantalla desconectada"];
+  }
+} // End of handleDisplayDisconnected:
+
+/**
+ * Called when the camera capture session encounters an error or the device is disconnected.
+ * Shows a disconnect overlay with the appropriate message.
+ * @param notification The notification containing error information
+ */
+- (void)cameraSessionError:(NSNotification*)notification{
+  if(!camera_session) return;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if(self->isWinClosing) return;
+    [self showDisconnectOverlay:@"C\u00e1mara no disponible"];
+  });
+} // End of cameraSessionError:
+
+/**
+ * Clones the current source selection to another window.
+ * Creates a WindowSel from the current state and triggers changeWindow on the target.
+ * Camera sources are skipped since AVCaptureDevice is exclusive to one session.
+ * @param target The window to clone the source to
+ * @return YES if cloning succeeded, NO if source can't be cloned (camera or no source)
+ */
+- (BOOL) cloneSourceToWindow:(Window*)target{
+  if(![self is_capturing] && !is_hls_session) return NO;
+
+  // Camera can't be shared between sessions
+  if(camera_id != nil){
+    NSLog(@"Cannot clone camera source — AVCaptureDevice is exclusive to one session");
+    return NO;
+  }
+
+  WindowSel* sel = [WindowSel getDefault];
+  sel.winId = window_id;
+  sel.dspId = display_id;
+  sel.ownerPid = owner_pid;
+  sel.cameraId = nil;
+  sel.owner = nil;
+  sel.title = self.title;
+
+  NSMenuItem* item = [[NSMenuItem alloc] init];
+  [item setRepresentedObject:sel];
+  [target changeWindow:item];
+  return YES;
+} // End of cloneSourceToWindow:
+
+/**
+ * Returns a localized string describing the type of source this window is capturing.
+ * @return Source type string (e.g. "Pantalla", "Ventana", "C\u00e1mara", "HLS", "AirPlay")
+ */
+- (NSString*) sourceType{
+  if(is_airplay_session) return @"AirPlay";
+  if(is_hls_session) return @"HLS";
+  if(camera_id != nil) return @"C\u00e1mara";
+  if(display_id >= 0) return @"Pantalla";
+  if(window_id >= 0) return @"Ventana";
+  return @"Ninguno";
+} // End of sourceType
+
+/**
+ * Returns a localized string describing the current status of this window's capture.
+ * @return Status string (e.g. "Activo", "Pausado", "Desconectado")
+ */
+- (NSString*) sourceStatus{
+  if(![self is_capturing] && !is_hls_session && !is_airplay_session) return @"Sin fuente";
+  if(is_playing) return @"Activo";
+  return @"Pausado";
+} // End of sourceStatus
 
 
 #if __has_include(<ScreenCaptureKit/ScreenCaptureKit.h>)
 
 // SCStreamDelegate method - called when stream stops
 - (void)stream:(SCStream *)stream didStopWithError:(NSError *)error API_AVAILABLE(macos(12.3)) {
-  if (error) {
-    NSLog(@"ScreenCaptureKit stream stopped with error: %@", error);
-  }
+  NSLog(@"ScreenCaptureKit stream stopped%@", error ? [NSString stringWithFormat:@" with error: %@", error] : @"");
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if(self->isWinClosing) return;
+    [self showDisconnectOverlay:@"Ventana cerrada"];
+  });
 }
 
 - (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer ofType:(SCStreamOutputType)type API_AVAILABLE(macos(12.3)){
@@ -3389,8 +3584,21 @@ end:
 }
 
 - (void)windowWillClose:(NSNotification *)notification{
-  // Terminate the app when the window is closed
-  [[NSApplication sharedApplication] terminate:nil];
+  isWinClosing = true;
+  [self stopTimer];
+  [self stopDisplayStream];
+  [self stopWindowStream];
+  [self stopCameraCapture];
+  CGDisplayRemoveReconfigurationCallback(displayReconfigurationCallback, (__bridge void*)self);
+
+  // If this is the last PiP window, terminate the app
+  NSInteger remainingPipWindows = 0;
+  for(NSWindow* w in [[NSApplication sharedApplication] windows]){
+    if([w isKindOfClass:[Window class]] && w != self) remainingPipWindows++;
+  }
+  if(remainingPipWindows == 0){
+    [[NSApplication sharedApplication] terminate:nil];
+  }
 }
 
 - (void)windowDidBecomeKey:(NSNotification *)notification{
@@ -3402,7 +3610,6 @@ end:
 //}
 
 - (void)close{
-//  NSLog(@"close pvc: %d, isPipCLosing: %d, isWinClosing: %d", (int)pvc, isPipCLosing, isWinClosing);
   [self dismissHLSInputView];
   if(pvc){
     if(!isPipCLosing){
@@ -3424,6 +3631,14 @@ end:
 
   if(isWinClosing) return;
   isWinClosing = true;
+
+  // Unregister display reconfiguration callback
+  CGDisplayRemoveReconfigurationCallback(displayReconfigurationCallback, (__bridge void*)self);
+
+  // Remove camera disconnect notification observers
+  [[NSNotificationCenter defaultCenter] removeObserver:self name:AVCaptureSessionRuntimeErrorNotification object:nil];
+  [[NSNotificationCenter defaultCenter] removeObserver:self name:AVCaptureSessionDidStopRunningNotification object:nil];
+  [[NSNotificationCenter defaultCenter] removeObserver:self name:AVCaptureDeviceWasDisconnectedNotification object:nil];
 
   #ifndef NO_AIRPLAY
   if(is_airplay_session) airplay_receiver_session_stop(self.conn);
@@ -3455,6 +3670,10 @@ end:
   [popbutt removeFromSuperview];
   [playbutt removeFromSuperview];
   [selectionView removeFromSuperview];
+  if(sourceHintOverlay){
+    [sourceHintOverlay removeFromSuperview];
+    sourceHintOverlay = nil;
+  }
   [rootView removeFromSuperview];
 
   nvc = NULL;

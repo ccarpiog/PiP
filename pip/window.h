@@ -71,5 +71,8 @@
 - (void) setVolume:(float)volume;
 - (void) setAudioInputFormat:(UInt32)format withsampleRate:(UInt32)sampleRate andChannels:(UInt32)channelCount andSPF:(UInt32)spf;
 - (void) loadHLSURL:(NSURL*)url;
+- (BOOL) cloneSourceToWindow:(Window*)target;
+- (NSString*) sourceType;
+- (NSString*) sourceStatus;
 @end
 #endif /* Window_h */
