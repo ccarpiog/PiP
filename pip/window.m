@@ -2013,12 +2013,12 @@ static void displayReconfigurationCallback(CGDirectDisplayID display, CGDisplayC
     NSMenu *streamMenu = [[NSMenu alloc] init];
 
     if (streamManager && [streamManager isStreaming]) {
-      ADD_MENU_ITEM(streamMenu, @"Detener transmisión", @selector(stopStreamAction:), NULL)
+      ADD_MENU_ITEM(streamMenu, @"Stop Streaming", @selector(stopStreamAction:), NULL)
       [streamMenu addItem:[NSMenuItem separatorItem]];
-      ADD_MENU_ITEM(streamMenu, @"Copiar URL", @selector(copyStreamURL:), NULL)
-      ADD_MENU_ITEM(streamMenu, @"Abrir en navegador", @selector(openStreamInBrowser:), NULL)
+      ADD_MENU_ITEM(streamMenu, @"Copy URL", @selector(copyStreamURL:), NULL)
+      ADD_MENU_ITEM(streamMenu, @"Open in Browser", @selector(openStreamInBrowser:), NULL)
     } else {
-      ADD_MENU_ITEM(streamMenu, @"Iniciar transmisión", @selector(startStreamAction:), NULL)
+      ADD_MENU_ITEM(streamMenu, @"Start Streaming", @selector(startStreamAction:), NULL)
     }
 
     [streamMenu addItem:[NSMenuItem separatorItem]];
@@ -2027,7 +2027,7 @@ static void displayReconfigurationCallback(CGDirectDisplayID display, CGDisplayC
     NSMenu *qualitySubmenu = [[NSMenu alloc] init];
     StreamQuality currentQ = streamManager ? [streamManager currentQuality] : StreamQualityMedium;
 
-    NSArray *qualityNames = @[@"Baja (720p)", @"Media (1080p)", @"Alta (nativa)"];
+    NSArray *qualityNames = @[@"Low (720p)", @"Medium (1080p)", @"High (native)"];
     NSArray *qualityValues = @[@(StreamQualityLow), @(StreamQualityMedium), @(StreamQualityHigh)];
 
     for (int i = 0; i < 3; i++) {
@@ -2039,7 +2039,7 @@ static void displayReconfigurationCallback(CGDirectDisplayID display, CGDisplayC
       }
     } // End of loop through quality options
 
-    ADD_MENU_ITEM(streamMenu, @"Calidad", nil, NULL, {
+    ADD_MENU_ITEM(streamMenu, @"Quality", nil, NULL, {
       [item setSubmenu:qualitySubmenu];
     })
 
@@ -2053,7 +2053,7 @@ static void displayReconfigurationCallback(CGDirectDisplayID display, CGDisplayC
       }
     }
 
-    ADD_MENU_ITEM(theMenu, @"Transmitir", nil, NULL, {
+    ADD_MENU_ITEM(theMenu, @"Stream", nil, NULL, {
       [item setSubmenu:streamMenu];
     })
   }
