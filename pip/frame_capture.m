@@ -96,17 +96,15 @@ static void capture_frame(frame_capture_t *cap) {
     return;
   }
 
-  // Get the current image from the renderer (must be on main thread)
-  // __block CIImage *currentImage = nil;
-  // if ([NSThread isMainThread]) {
-  //   currentImage = [imageView.renderer currentImage];
-  // } else {
-  //   dispatch_sync(dispatch_get_main_queue(), ^{
-  //     currentImage = [imageView.renderer currentImage];
-  //   });
-  // }
-
-  __block CIImage *currentImage = [imageView.renderer currentImage];
+  // Get the current image from the renderer on main thread.
+  __block CIImage *currentImage = nil;
+  if ([NSThread isMainThread]) {
+    currentImage = [imageView.renderer currentImage];
+  } else {
+    dispatch_sync(dispatch_get_main_queue(), ^{
+      currentImage = [imageView.renderer currentImage];
+    });
+  }
 
   if (!currentImage) {
     if (cap->frame_count == 0 || cap->frame_count % 30 == 0) {

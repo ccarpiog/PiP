@@ -155,6 +155,8 @@ static NSArray* getPrefsArray(void){
     OPTION(mouse_capture, "Show mouse cursor", CheckBox, [NSNull null], @0, @"when pipping screen"),
     OPTION(new_window_behavior, "New Window", Select, (@[@"Blank with hint", @"Clone current window"]), @0, [NSNull null]),
     OPTION(max_windows, "Max Windows", Select, (@[@"2", @"4", @"6", @"8", @"10"]), @3, [NSNull null]),
+    OPTION(stream_port, "Streaming Port", TextInput, [NSNull null], @"8080", @"HTTP server port"),
+    OPTION(stream_quality, "Streaming Quality", Select, (@[@"Low (720p)", @"Medium (1080p)", @"High (native)"]), @1, [NSNull null]),
   ]];
 
   // Add ScreenCaptureKit option only on macOS 12.3+
@@ -298,6 +300,18 @@ NSObject* getPrefOption(NSString* key){
   }
 } // End of onButtonClick()
 
+/**
+ * Handles text input end editing for TextInput preferences.
+ * Saves the text field value as a string preference.
+ * @param notification The notification containing the text field
+ */
+- (void)controlTextDidEndEditing:(NSNotification *)notification{
+  NSTextField* textField = notification.object;
+  if(textField.identifier){
+    setPref(textField.identifier, textField.stringValue);
+  }
+} // End of controlTextDidEndEditing:
+
 - (nullable NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(nullable NSTableColumn *)tableColumn row:(NSInteger)row{
   NSInteger col = [[tableView tableColumns] indexOfObject:tableColumn];
 //  NSLog(@"row: %ld, col: %ld", row, col);
@@ -347,8 +361,29 @@ NSObject* getPrefOption(NSString* key){
         view = checkBox;
         break;
       }
-      case OptionTypeTextInput:
+      case OptionTypeTextInput:{
+        NSTextField* textField = [[NSTextField alloc] init];
+        textField.translatesAutoresizingMaskIntoConstraints = false;
+        textField.editable = YES;
+        textField.selectable = YES;
+        textField.bezeled = YES;
+        textField.bezelStyle = NSTextFieldSquareBezel;
+        textField.drawsBackground = YES;
+        textField.identifier = key;
+        textField.delegate = self;
+        if ([value isKindOfClass:[NSString class]]) {
+          textField.stringValue = (NSString*)value;
+        } else if ([value isKindOfClass:[NSNumber class]]) {
+          textField.stringValue = [(NSNumber*)value stringValue];
+        } else {
+          textField.stringValue = @"";
+        }
+        if (pref[@"desc"] && pref[@"desc"] != [NSNull null]) {
+          textField.placeholderString = (NSString*)pref[@"desc"];
+        }
+        view = textField;
         break;
+      }
       case OptionTypeDisplaySelect:{
         NSPopUpButton* button = [[NSPopUpButton alloc] init];
         button.translatesAutoresizingMaskIntoConstraints = false;

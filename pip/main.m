@@ -8,6 +8,7 @@
 
 #import "window.h"
 #import "preferences.h"
+#import "stream_manager.h"
 #import <AVFoundation/AVFoundation.h>
 #import <Metal/Metal.h>
 #ifndef NO_AIRPLAY
@@ -89,6 +90,7 @@ static WindowManagerPanel* windowManagerPanel = nil;
   ADD_ITEM(@"New", newWindow, @"n");
   ADD_ITEM_MASK(@"Clone Window", cloneCurrentWindow, @"n", NSEventModifierFlagCommand | NSEventModifierFlagShift);
   ADD_ITEM(@"Stream HLS", loadHLSStream:, @"l");
+  ADD_ITEM_MASK(@"Start Streaming", startStreamCurrentWindow, @"s", NSEventModifierFlagCommand | NSEventModifierFlagShift);
   ADD_ITEM(@"Click Through", clickThrough:, @"c");
   ADD_ITEM(@"Close", performClose:, @"w");
 
@@ -289,6 +291,16 @@ static WindowManagerPanel* windowManagerPanel = nil;
     if([window isKindOfClass:[Window class]]) [window setIgnoresMouseEvents:clickThroughState];
   }
 }
+
+/**
+ * Start streaming on the active PiP window.
+ * Finds the frontmost PiP window and triggers streaming via its startStreamAction: method.
+ */
+- (void)startStreamCurrentWindow{
+  [self getActiveWindow:^(Window *window) {
+    [window startStreamAction:nil];
+  }];
+} // End of startStreamCurrentWindow
 
 /**
  * Returns all PiP Window instances, including minimized/hidden ones.

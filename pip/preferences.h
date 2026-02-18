@@ -23,7 +23,7 @@ NSString* getDisplayNameForId(CGDirectDisplayID displayId);
 void setCustomDisplayName(CGDirectDisplayID displayId, NSString* name);
 void showDisplayNamesPanel(void);
 
-@interface Preferences : NSPanel<NSWindowDelegate, NSTableViewDelegate, NSTableViewDataSource>
+@interface Preferences : NSPanel<NSWindowDelegate, NSTableViewDelegate, NSTableViewDataSource, NSTextFieldDelegate>
 
 @end
 

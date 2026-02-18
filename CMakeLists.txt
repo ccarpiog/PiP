@@ -14,7 +14,7 @@ list(TRANSFORM frameworks PREPEND "-framework ")
 
 set(AIRPLAY_SUPPORT_ENABLED 1)
 
-file(GLOB_RECURSE pip_src CONFIGURE_DEPENDS "pip/*.m")
+file(GLOB_RECURSE pip_src CONFIGURE_DEPENDS "pip/*.m" "pip/*.c")
 add_executable(pip ${pip_src})
 target_include_directories(pip PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}

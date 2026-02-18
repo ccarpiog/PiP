@@ -12,6 +12,7 @@
 #import "audioPlayer.h"
 #import "H264Decoder.h"
 #import "HLSPlayer.h"
+#import "stream_manager.h"
 #import <AVFoundation/AVFoundation.h>
 #import <CoreImage/CoreImage.h>
 #ifndef NO_AIRPLAY
@@ -854,6 +855,7 @@ static void displayReconfigurationCallback(CGDirectDisplayID display, CGDisplayC
   bool is_airplay_sending;
   dispatch_queue_t senderQueue;  // Serial queue for sender operations
 #endif
+  StreamManager* streamManager;
 }
 
 - (id) initWithAirplay:(bool)enable andTitle:(NSString*)title{
@@ -2001,6 +2003,57 @@ static void displayReconfigurationCallback(CGDirectDisplayID display, CGDisplayC
     }
   }
 #endif
+
+  // Streaming submenu
+  if ([self is_capturing] || is_hls_session || camera_id) {
+    NSMenu *streamMenu = [[NSMenu alloc] init];
+
+    if (streamManager && [streamManager isStreaming]) {
+      ADD_MENU_ITEM(streamMenu, @"Detener transmisión", @selector(stopStreamAction:), NULL)
+      [streamMenu addItem:[NSMenuItem separatorItem]];
+      ADD_MENU_ITEM(streamMenu, @"Copiar URL", @selector(copyStreamURL:), NULL)
+      ADD_MENU_ITEM(streamMenu, @"Abrir en navegador", @selector(openStreamInBrowser:), NULL)
+    } else {
+      ADD_MENU_ITEM(streamMenu, @"Iniciar transmisión", @selector(startStreamAction:), NULL)
+    }
+
+    [streamMenu addItem:[NSMenuItem separatorItem]];
+
+    // Quality submenu
+    NSMenu *qualitySubmenu = [[NSMenu alloc] init];
+    StreamQuality currentQ = streamManager ? [streamManager currentQuality] : StreamQualityMedium;
+
+    NSArray *qualityNames = @[@"Baja (720p)", @"Media (1080p)", @"Alta (nativa)"];
+    NSArray *qualityValues = @[@(StreamQualityLow), @(StreamQualityMedium), @(StreamQualityHigh)];
+
+    for (int i = 0; i < 3; i++) {
+      NSMenuItem *qItem = [qualitySubmenu addItemWithTitle:qualityNames[i] action:@selector(setStreamQuality:) keyEquivalent:@""];
+      [qItem setTarget:self];
+      [qItem setTag:[qualityValues[i] intValue]];
+      if ([qualityValues[i] intValue] == (int)currentQ) {
+        [qItem setState:NSControlStateValueOn];
+      }
+    } // End of loop through quality options
+
+    ADD_MENU_ITEM(streamMenu, @"Calidad", nil, NULL, {
+      [item setSubmenu:qualitySubmenu];
+    })
+
+    // Show URL as info if streaming
+    if (streamManager && [streamManager isStreaming]) {
+      [streamMenu addItem:[NSMenuItem separatorItem]];
+      NSString *url = [streamManager streamURL];
+      if (url) {
+        NSMenuItem *urlItem = [streamMenu addItemWithTitle:url action:nil keyEquivalent:@""];
+        [urlItem setEnabled:NO];
+      }
+    }
+
+    ADD_MENU_ITEM(theMenu, @"Transmitir", nil, NULL, {
+      [item setSubmenu:streamMenu];
+    })
+  }
+
 end:
   if(is_hls_session && !pvc){
     // Add quality/resolution selection menu for HLS
@@ -2129,6 +2182,89 @@ end:
   NSSlider* slider = (NSSlider*)sender;
   [self setAlphaValue:slider.doubleValue];
 }
+
+#pragma mark - Streaming Methods
+
+/**
+ * Start streaming the current window content.
+ * Creates a StreamManager if needed, reads port/quality from preferences,
+ * and copies the stream URL to the clipboard on success.
+ */
+- (void)startStreamAction:(id)sender {
+  if (!imageView) return;
+
+  if (!streamManager) {
+    streamManager = [[StreamManager alloc] initWithImageView:imageView];
+  }
+
+  // stream_port is stored as NSString by TextInput preferences
+  NSObject *portPref = getPref(@"stream_port");
+  int port = 8080;
+  if ([portPref isKindOfClass:[NSString class]]) {
+    port = [(NSString*)portPref intValue];
+  } else if ([portPref isKindOfClass:[NSNumber class]]) {
+    port = [(NSNumber*)portPref intValue];
+  }
+  if (port <= 0 || port > 65535) port = 8080;
+
+  StreamQuality quality = (StreamQuality)[(NSNumber*)getPref(@"stream_quality") intValue];
+
+  BOOL success = [streamManager startStreamingOnPort:port withQuality:quality];
+  if (success) {
+    NSString *url = [streamManager streamURL];
+    NSLog(@"Streaming started at %@", url);
+    // Copy URL to clipboard automatically
+    [[NSPasteboard generalPasteboard] clearContents];
+    [[NSPasteboard generalPasteboard] setString:url forType:NSPasteboardTypeString];
+  }
+} // End of startStreamAction:
+
+/**
+ * Stop the current streaming session.
+ */
+- (void)stopStreamAction:(id)sender {
+  if (streamManager) {
+    [streamManager stopStreaming];
+  }
+} // End of stopStreamAction:
+
+/**
+ * Copy the stream URL to the system clipboard.
+ */
+- (void)copyStreamURL:(id)sender {
+  if (streamManager && [streamManager isStreaming]) {
+    NSString *url = [streamManager streamURL];
+    if (url) {
+      [[NSPasteboard generalPasteboard] clearContents];
+      [[NSPasteboard generalPasteboard] setString:url forType:NSPasteboardTypeString];
+    }
+  }
+} // End of copyStreamURL:
+
+/**
+ * Open the stream URL in the default web browser.
+ */
+- (void)openStreamInBrowser:(id)sender {
+  if (streamManager && [streamManager isStreaming]) {
+    NSString *url = [streamManager streamURL];
+    if (url) {
+      [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:url]];
+    }
+  }
+} // End of openStreamInBrowser:
+
+/**
+ * Set the streaming quality from a menu item tag.
+ * Saves the preference and updates the active stream if running.
+ */
+- (void)setStreamQuality:(id)sender {
+  NSMenuItem *menuItem = (NSMenuItem *)sender;
+  StreamQuality quality = (StreamQuality)[menuItem tag];
+  setPref(@"stream_quality", [NSNumber numberWithInt:(int)quality]);
+  if (streamManager) {
+    [streamManager setQuality:quality];
+  }
+} // End of setStreamQuality:
 
 -(void)stopDisplayStream{
   if(!display_stream) return;
@@ -3589,6 +3725,12 @@ end:
   [self stopDisplayStream];
   [self stopWindowStream];
   [self stopCameraCapture];
+
+  // Stop streaming if active
+  if (streamManager) {
+    [streamManager stopStreaming];
+    streamManager = nil;
+  }
   CGDisplayRemoveReconfigurationCallback(displayReconfigurationCallback, (__bridge void*)self);
 
   // If this is the last PiP window, terminate the app

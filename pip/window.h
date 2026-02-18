@@ -15,6 +15,7 @@
 #import "preferences.h"
 #import "selectionView.h"
 #import "HLSPlayer.h"
+#import "stream_manager.h"
 #ifndef NO_AIRPLAY
 #import "airplaySender.h"
 #endif
@@ -74,5 +75,6 @@
 - (BOOL) cloneSourceToWindow:(Window*)target;
 - (NSString*) sourceType;
 - (NSString*) sourceStatus;
+- (void) startStreamAction:(id)sender;
 @end
 #endif /* Window_h */
