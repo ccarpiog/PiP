@@ -155,8 +155,12 @@
             if (typeof Hls !== "undefined" && Hls.isSupported()) {
                 console.log("[PiP] Using hls.js");
                 var hls = new Hls({
-                    liveSyncDuration: 3,
-                    liveMaxLatencyDuration: 6,
+                    lowLatencyMode: true,
+                    liveSyncDuration: 2,
+                    liveMaxLatencyDuration: 3.5,
+                    maxBufferLength: 4,
+                    backBufferLength: 8,
+                    maxLiveSyncPlaybackRate: 1.25,
                     enableWorker: true,
                     debug: false
                 });

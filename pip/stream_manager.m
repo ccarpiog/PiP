@@ -48,9 +48,9 @@ INCBIN(hls_js, "pip/hls.min.js");
 /* Pipeline constants                                                  */
 /* ------------------------------------------------------------------ */
 
-#define HLS_MAX_SEGMENTS     15  /* ring buffer size for HLS writer (keeps extra for slow clients) */
-#define HLS_PLAYLIST_SIZE    6   /* segments to list in the .m3u8 playlist */
-#define SEGMENT_DURATION_SEC 2   /* target MPEG-TS segment duration */
+#define HLS_MAX_SEGMENTS     12  /* ring buffer size for HLS writer (keeps extra for slow clients) */
+#define HLS_PLAYLIST_SIZE    4   /* shorter live window for lower end-to-end latency */
+#define SEGMENT_DURATION_SEC 1   /* target MPEG-TS segment duration for ~2-3s latency */
 
 /* ------------------------------------------------------------------ */
 /* Quality preset parameters                                           */
@@ -280,6 +280,8 @@ static int aac_encoder_encode_pcm(aac_encoder_t *enc, const float *samples, int 
         [self stopStreaming];
         return NO;
     }
+    /* Force 1-second GOP for low-latency HLS segmentation. */
+    video_encoder_set_keyframe_interval(_encoder, params->fps);
 
     /* --- 4. Allocate and populate the pipeline context --- */
     _pipeline_ctx = calloc(1, sizeof(pipeline_ctx_t));
