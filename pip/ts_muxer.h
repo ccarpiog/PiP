@@ -68,6 +68,19 @@ void ts_muxer_destroy(ts_muxer_t *muxer);
 void ts_muxer_push_h264(ts_muxer_t *muxer, uint8_t *nal_data, size_t nal_size, uint64_t pts, int is_keyframe);
 
 /**
+ * Push one raw AAC frame (no ADTS header) to the muxer.
+ * The muxer wraps it in ADTS + PES + TS packets on the audio PID.
+ * @param muxer       The muxer instance
+ * @param aac_data    Raw AAC frame bytes
+ * @param aac_size    Size of aac_data in bytes
+ * @param pts         Presentation timestamp in microseconds
+ * @param sample_rate AAC sample rate in Hz
+ * @param channels    AAC channel count
+ */
+void ts_muxer_push_aac(ts_muxer_t *muxer, uint8_t *aac_data, size_t aac_size,
+                       uint64_t pts, int sample_rate, int channels);
+
+/**
  * Set the SPS and PPS parameter sets for the H.264 stream.
  * These are stored internally and prepended to keyframes in the TS output.
  * @param muxer    The muxer instance

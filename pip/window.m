@@ -833,9 +833,11 @@ static void displayReconfigurationCallback(CGDirectDisplayID display, CGDisplayC
   AVCaptureSession* camera_session;
   AVCaptureDeviceInput* camera_input;
   AVCaptureVideoDataOutput* camera_output;
+  AVCaptureAudioDataOutput* camera_audio_output;
   NSString* camera_id;
   AVCaptureDeviceFormat* camera_format;
   AVCaptureDevicePosition camera_position;
+  uint64_t camera_audio_sample_count;
 
   // Camera audio capture and playback using AVCaptureAudioPreviewOutput
   AVCaptureAudioPreviewOutput* camera_audio_preview;
@@ -874,8 +876,10 @@ static void displayReconfigurationCallback(CGDirectDisplayID display, CGDisplayC
   camera_session = nil;
   camera_input = nil;
   camera_output = nil;
+  camera_audio_output = nil;
   camera_id = nil;
   camera_format = nil;
+  camera_audio_sample_count = 0;
 
   // Initialize camera audio variables
   camera_audio_preview = nil;
@@ -2309,9 +2313,11 @@ end:
   camera_session = nil;
   camera_input = nil;
   camera_output = nil;
+  camera_audio_output = nil;
   camera_id = nil;
   camera_format = nil;
   camera_position = AVCaptureDevicePositionUnspecified;
+  camera_audio_sample_count = 0;
 } // End of stopCameraCapture
 
 -(NSArray<NSDictionary *> *)getAvailableCameraResolutions:(NSString*)deviceId {
@@ -2483,6 +2489,8 @@ end:
   // Set up audio preview if enabled - uses AVCaptureAudioPreviewOutput for automatic format handling
   camera_has_microphone = false;
   camera_audio_preview = nil;
+  camera_audio_output = nil;
+  camera_audio_sample_count = 0;
 
   if(camera_audio_enabled) {
     // Check microphone permission
@@ -2531,6 +2539,18 @@ end:
         } else {
           [session addInput:audioInput];
 
+          AVCaptureAudioDataOutput *audioDataOutput = [[AVCaptureAudioDataOutput alloc] init];
+          dispatch_queue_t audioQueue = dispatch_queue_create("com.pip.camera.audio", DISPATCH_QUEUE_SERIAL);
+          [audioDataOutput setSampleBufferDelegate:self queue:audioQueue];
+          if([session canAddOutput:audioDataOutput]) {
+            [session addOutput:audioDataOutput];
+            camera_audio_output = audioDataOutput;
+            camera_has_microphone = true;
+            NSLog(@"Camera audio stream output configured for outgoing HLS audio");
+          } else {
+            NSLog(@"Cannot add audio data output to camera session");
+          }
+
           // Use AVCaptureAudioPreviewOutput for automatic audio playback
           // This handles all format conversion automatically
           AVCaptureAudioPreviewOutput *audioPreview = [[AVCaptureAudioPreviewOutput alloc] init];
@@ -2578,7 +2598,17 @@ end:
 - (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
   if(!is_playing || isWinClosing || !camera_session) return;
 
-  // Only handle video output - audio is handled automatically by AVCaptureAudioPreviewOutput
+  if([output isKindOfClass:[AVCaptureAudioDataOutput class]]) {
+    camera_audio_sample_count++;
+    if(camera_audio_sample_count == 1 || (camera_audio_sample_count % 500 == 0)) {
+      NSLog(@"Camera audio callback samples=%llu", (unsigned long long)camera_audio_sample_count);
+    }
+    if(streamManager && [streamManager isStreaming]) {
+      [streamManager pushAudioSampleBuffer:sampleBuffer];
+    }
+    return;
+  }
+
   if(![output isKindOfClass:[AVCaptureVideoDataOutput class]]) {
     return;
   }
@@ -2814,6 +2844,15 @@ end:
 - (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer ofType:(SCStreamOutputType)type API_AVAILABLE(macos(12.3)){
   if(!is_playing || isWinClosing) return;
 
+  if (@available(macOS 13.0, *)) {
+    if (type == SCStreamOutputTypeAudio) {
+      if (streamManager && [streamManager isStreaming]) {
+        [streamManager pushAudioSampleBuffer:sampleBuffer];
+      }
+      return;
+    }
+  }
+
   CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
   if (!imageBuffer) {
     return;
@@ -2935,6 +2974,9 @@ end:
         streamConfig.minimumFrameInterval = CMTimeMake(1, refreshRate);
         streamConfig.scalesToFit = NO;
         streamConfig.queueDepth = 2;
+        streamConfig.capturesAudio = YES;
+        streamConfig.sampleRate = 48000;
+        streamConfig.channelCount = 2;
 
         NSLog(@"startWindowStream: window_id=%d, windowFrame={%.1f,%.1f,%.1f,%.1f}, is_hidpi=%d, config=%lux%lu",
               window_id, windowFrame.origin.x, windowFrame.origin.y, windowFrame.size.width, windowFrame.size.height,
@@ -2957,6 +2999,14 @@ end:
             [self startTimer:1.0/refreshRate];
           });
           return;
+        }
+
+        if (@available(macOS 13.0, *)) {
+          NSError *audioOutputError = nil;
+          BOOL audioOutputAdded = [self->window_stream addStreamOutput:self type:SCStreamOutputTypeAudio sampleHandlerQueue:dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0) error:&audioOutputError];
+          if (!audioOutputAdded || audioOutputError) {
+            NSLog(@"ScreenCaptureKit audio output unavailable: %@", audioOutputError);
+          }
         }
 
         // Start stream

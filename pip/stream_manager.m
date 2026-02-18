@@ -25,10 +25,14 @@
 
 #import <Cocoa/Cocoa.h>
 #import <CoreImage/CoreImage.h>
+#import <CoreMedia/CoreMedia.h>
+#import <AudioToolbox/AudioToolbox.h>
 
 #include <ifaddrs.h>
 #include <arpa/inet.h>
 #include <net/if.h>
+#include <pthread.h>
+#include <math.h>
 
 /* ------------------------------------------------------------------ */
 /* Embedded viewer resources via incbin                                */
@@ -76,6 +80,9 @@ typedef struct {
     int              sps_pps_sent;    /* whether SPS/PPS has been set on the muxer */
     int              expected_width;  /* encoder's configured frame width */
     int              expected_height; /* encoder's configured frame height */
+    int              audio_sample_rate;
+    int              audio_channels;
+    pthread_mutex_t  muxer_lock;
 } pipeline_ctx_t;
 
 /* ------------------------------------------------------------------ */
@@ -88,6 +95,7 @@ static void encoded_frame_cb(uint8_t *data, int len, bool is_keyframe,
                               uint8_t *sps, int sps_len,
                               uint8_t *pps, int pps_len,
                               uint64_t pts, void *ctx);
+static void encoded_audio_cb(uint8_t *data, int len, uint64_t pts, void *ctx);
 static void segment_cb(void *context, uint8_t *segment_data,
                         size_t segment_size, double duration,
                         uint64_t segment_index);
@@ -100,6 +108,34 @@ static NSString *get_local_ip_address(void);
 static void compute_output_resolution(StreamQuality quality,
                                        int source_width, int source_height,
                                        int *out_width, int *out_height);
+static float *resample_interleaved_linear(const float *input, int input_frames, int channels,
+                                          int input_rate, int output_rate, int *output_frames);
+static float *expand_mono_to_stereo(const float *input, int frames);
+
+/* ------------------------------------------------------------------ */
+/* Internal AAC encoder state                                          */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    AudioConverterRef converter;
+    AudioStreamBasicDescription in_asbd;
+    AudioStreamBasicDescription out_asbd;
+    float *pcm_buffer;
+    int pcm_capacity_frames;
+    int pcm_frames;
+    int sample_rate;
+    int channels;
+    int bitrate;
+    int pts_initialized;
+    uint64_t next_pts_us;
+} aac_encoder_t;
+
+static aac_encoder_t *aac_encoder_create(int sample_rate, int channels, int bitrate);
+static void aac_encoder_destroy(aac_encoder_t *enc);
+static int aac_encoder_encode_pcm(aac_encoder_t *enc, const float *samples, int num_frames,
+                                   uint64_t pts,
+                                   void (*callback)(uint8_t *data, int len, uint64_t pts, void *ctx),
+                                   void *callback_ctx);
 
 /* ------------------------------------------------------------------ */
 /* StreamManager class extension (private ivars)                       */
@@ -111,6 +147,7 @@ static void compute_output_resolution(StreamQuality quality,
     /* Pipeline components */
     frame_capture_t  *_capture;
     video_encoder_t  *_encoder;
+    aac_encoder_t    *_audio_encoder;
     ts_muxer_t       *_muxer;
     hls_writer_t     *_writer;
     stream_server_t  *_server;
@@ -122,6 +159,10 @@ static void compute_output_resolution(StreamQuality quality,
     BOOL              _streaming;
     int               _port;
     StreamQuality     _quality;
+    int               _audio_sample_rate;
+    int               _audio_channels;
+    uint64_t          _audio_next_pts_us;
+    BOOL              _audio_pts_initialized;
 }
 @end
 
@@ -143,6 +184,7 @@ static void compute_output_resolution(StreamQuality quality,
         _imageView = imageView;
         _capture = NULL;
         _encoder = NULL;
+        _audio_encoder = NULL;
         _muxer = NULL;
         _writer = NULL;
         _server = NULL;
@@ -150,6 +192,10 @@ static void compute_output_resolution(StreamQuality quality,
         _streaming = NO;
         _port = 0;
         _quality = StreamQualityMedium;
+        _audio_sample_rate = 0;
+        _audio_channels = 0;
+        _audio_next_pts_us = 0;
+        _audio_pts_initialized = NO;
     }
     return self;
 } // end of function initWithImageView:
@@ -248,6 +294,9 @@ static void compute_output_resolution(StreamQuality quality,
     _pipeline_ctx->sps_pps_sent = 0;
     _pipeline_ctx->expected_width = output_width;
     _pipeline_ctx->expected_height = output_height;
+    _pipeline_ctx->audio_sample_rate = 48000;
+    _pipeline_ctx->audio_channels = 2;
+    pthread_mutex_init(&_pipeline_ctx->muxer_lock, NULL);
 
     /* Wire the encoder callback -> TS muxer */
     video_encoder_set_callback(_encoder, encoded_frame_cb, _pipeline_ctx);
@@ -289,6 +338,10 @@ static void compute_output_resolution(StreamQuality quality,
     }
 
     _streaming = YES;
+    _audio_sample_rate = 0;
+    _audio_channels = 0;
+    _audio_next_pts_us = 0;
+    _audio_pts_initialized = NO;
 
     NSString *url = [self streamURL];
     NSLog(@"stream_manager: pipeline started, stream available at %@", url ?: @"(unknown)");
@@ -301,56 +354,68 @@ static void compute_output_resolution(StreamQuality quality,
  */
 - (void)stopStreaming
 {
-    if (!_streaming && !_capture && !_encoder && !_muxer && !_writer && !_server) {
-        return;
-    }
+    @synchronized (self) {
+        if (!_streaming && !_capture && !_encoder && !_muxer && !_writer && !_server) {
+            return;
+        }
 
-    NSLog(@"stream_manager: stopping pipeline");
+        NSLog(@"stream_manager: stopping pipeline");
+        _streaming = NO;
 
-    /* Stop in reverse order: capture -> encoder -> muxer -> writer -> server */
+        /* Stop in reverse order: capture -> encoder -> muxer -> writer -> server */
 
     /* 1. Stop and destroy frame capture (stops producing frames) */
-    if (_capture) {
-        frame_capture_stop(_capture);
-        frame_capture_destroy(_capture);
-        _capture = NULL;
-    }
+        if (_capture) {
+            frame_capture_stop(_capture);
+            frame_capture_destroy(_capture);
+            _capture = NULL;
+        }
 
     /* 2. Destroy the video encoder (no more encoded frames after this) */
-    if (_encoder) {
-        video_encoder_destroy(_encoder);
-        _encoder = NULL;
+        if (_encoder) {
+            video_encoder_destroy(_encoder);
+            _encoder = NULL;
+        }
+
+    /* 3. Destroy the audio encoder */
+        if (_audio_encoder) {
+            aac_encoder_destroy(_audio_encoder);
+            _audio_encoder = NULL;
+        }
+
+    /* 4. Flush and destroy the TS muxer (emit any partial segment) */
+        if (_muxer) {
+            ts_muxer_flush(_muxer);
+            ts_muxer_destroy(_muxer);
+            _muxer = NULL;
+        }
+
+    /* 5. Stop and destroy the HTTP server */
+        if (_server) {
+            stream_server_stop(_server);
+            stream_server_destroy(_server);
+            _server = NULL;
+        }
+
+    /* 6. Destroy the HLS writer (frees segment ring buffer) */
+        if (_writer) {
+            hls_writer_destroy(_writer);
+            _writer = NULL;
+        }
+
+    /* 7. Free the pipeline context */
+        if (_pipeline_ctx) {
+            pthread_mutex_destroy(&_pipeline_ctx->muxer_lock);
+            free(_pipeline_ctx);
+            _pipeline_ctx = NULL;
+        }
+        _audio_sample_rate = 0;
+        _audio_channels = 0;
+        _audio_next_pts_us = 0;
+        _audio_pts_initialized = NO;
+
+        NSLog(@"stream_manager: pipeline stopped");
     }
-
-    /* 3. Flush and destroy the TS muxer (emit any partial segment) */
-    if (_muxer) {
-        ts_muxer_flush(_muxer);
-        ts_muxer_destroy(_muxer);
-        _muxer = NULL;
-    }
-
-    /* 4. Stop and destroy the HTTP server */
-    if (_server) {
-        stream_server_stop(_server);
-        stream_server_destroy(_server);
-        _server = NULL;
-    }
-
-    /* 5. Destroy the HLS writer (frees segment ring buffer) */
-    if (_writer) {
-        hls_writer_destroy(_writer);
-        _writer = NULL;
-    }
-
-    /* 6. Free the pipeline context */
-    if (_pipeline_ctx) {
-        free(_pipeline_ctx);
-        _pipeline_ctx = NULL;
-    }
-
-    _streaming = NO;
-
-    NSLog(@"stream_manager: pipeline stopped");
 } // end of function stopStreaming
 
 /**
@@ -534,6 +599,261 @@ static NSImage *generateQRCode(NSString *string, CGFloat size)
     return addresses;
 } // end of function localIPAddresses
 
+static float *
+resample_interleaved_linear(const float *input, int input_frames, int channels,
+                            int input_rate, int output_rate, int *output_frames)
+{
+    if (!input || input_frames <= 0 || channels <= 0 || input_rate <= 0 || output_rate <= 0 || !output_frames) {
+        return NULL;
+    }
+
+    if (input_rate == output_rate) {
+        size_t sample_count = (size_t)input_frames * (size_t)channels;
+        float *copy = malloc(sample_count * sizeof(float));
+        if (!copy) {
+            return NULL;
+        }
+        memcpy(copy, input, sample_count * sizeof(float));
+        *output_frames = input_frames;
+        return copy;
+    }
+
+    double ratio = (double)output_rate / (double)input_rate;
+    int out_frames = (int)floor((double)input_frames * ratio);
+    if (out_frames <= 0) {
+        return NULL;
+    }
+
+    float *out = calloc((size_t)out_frames * (size_t)channels, sizeof(float));
+    if (!out) {
+        return NULL;
+    }
+
+    double step = (double)input_rate / (double)output_rate;
+    for (int i = 0; i < out_frames; i++) {
+        double src_pos = (double)i * step;
+        int idx0 = (int)src_pos;
+        if (idx0 < 0) {
+            idx0 = 0;
+        }
+        if (idx0 >= input_frames) {
+            idx0 = input_frames - 1;
+        }
+        int idx1 = idx0 < (input_frames - 1) ? idx0 + 1 : idx0;
+        float frac = (float)(src_pos - (double)idx0);
+        for (int ch = 0; ch < channels; ch++) {
+            float a = input[(size_t)idx0 * (size_t)channels + (size_t)ch];
+            float b = input[(size_t)idx1 * (size_t)channels + (size_t)ch];
+            out[(size_t)i * (size_t)channels + (size_t)ch] = a + (b - a) * frac;
+        }
+    }
+
+    *output_frames = out_frames;
+    return out;
+}
+
+static float *
+expand_mono_to_stereo(const float *input, int frames)
+{
+    if (!input || frames <= 0) {
+        return NULL;
+    }
+
+    float *out = calloc((size_t)frames * 2, sizeof(float));
+    if (!out) {
+        return NULL;
+    }
+
+    for (int i = 0; i < frames; i++) {
+        float v = input[i];
+        out[(size_t)i * 2] = v;
+        out[(size_t)i * 2 + 1] = v;
+    }
+    return out;
+}
+
+- (void)pushAudioSampleBuffer:(CMSampleBufferRef)sampleBuffer
+{
+    @synchronized (self) {
+        if (!sampleBuffer || !_streaming || !_pipeline_ctx || !_pipeline_ctx->muxer) {
+            return;
+        }
+
+    CMAudioFormatDescriptionRef format_desc = CMSampleBufferGetFormatDescription(sampleBuffer);
+    if (!format_desc) {
+        return;
+    }
+
+    const AudioStreamBasicDescription *asbd = CMAudioFormatDescriptionGetStreamBasicDescription(format_desc);
+    if (!asbd) {
+        return;
+    }
+
+    int channels = (int)asbd->mChannelsPerFrame;
+    int sample_rate = (int)llround(asbd->mSampleRate);
+    int num_frames = (int)CMSampleBufferGetNumSamples(sampleBuffer);
+    if (channels <= 0 || sample_rate <= 0 || num_frames <= 0) {
+        return;
+    }
+
+    size_t abl_size = sizeof(AudioBufferList) + (size_t)(channels > 1 ? (channels - 1) : 0) * sizeof(AudioBuffer);
+    AudioBufferList *audio_list = calloc(1, abl_size);
+    if (!audio_list) {
+        return;
+    }
+    CMBlockBufferRef block_buffer = NULL;
+    OSStatus list_status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+        sampleBuffer,
+        NULL,
+        audio_list,
+        abl_size,
+        NULL,
+        NULL,
+        kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
+        &block_buffer
+    );
+    if (list_status != noErr || audio_list->mNumberBuffers == 0) {
+        free(audio_list);
+        if (block_buffer) {
+            CFRelease(block_buffer);
+        }
+        return;
+    }
+
+    size_t sample_count = (size_t)num_frames * (size_t)channels;
+    float *working = calloc(sample_count, sizeof(float));
+    if (!working) {
+        free(audio_list);
+        if (block_buffer) {
+            CFRelease(block_buffer);
+        }
+        return;
+    }
+
+    int non_interleaved = (asbd->mFormatFlags & kAudioFormatFlagIsNonInterleaved) ? 1 : 0;
+    int is_float = (asbd->mFormatFlags & kAudioFormatFlagIsFloat) ? 1 : 0;
+    int is_signed_int = (asbd->mFormatFlags & kAudioFormatFlagIsSignedInteger) ? 1 : 0;
+    int bits_per_channel = (int)asbd->mBitsPerChannel;
+
+    if (non_interleaved) {
+        for (int ch = 0; ch < channels; ch++) {
+            uint32_t buf_index = (uint32_t)((ch < (int)audio_list->mNumberBuffers) ? ch : 0);
+            AudioBuffer ab = audio_list->mBuffers[buf_index];
+            if (!ab.mData) {
+                continue;
+            }
+
+            if (is_float && bits_per_channel == 32) {
+                const float *src = (const float *)ab.mData;
+                for (int i = 0; i < num_frames; i++) {
+                    working[i * channels + ch] = src[i];
+                }
+            } else if (is_signed_int && bits_per_channel == 16) {
+                const int16_t *src = (const int16_t *)ab.mData;
+                for (int i = 0; i < num_frames; i++) {
+                    working[i * channels + ch] = (float)src[i] / 32768.0f;
+                }
+            }
+        }
+    } else {
+        AudioBuffer ab = audio_list->mBuffers[0];
+        if (ab.mData) {
+            if (is_float && bits_per_channel == 32) {
+                size_t copy_count = sample_count;
+                size_t available = ab.mDataByteSize / sizeof(float);
+                if (available < copy_count) {
+                    copy_count = available;
+                }
+                memcpy(working, ab.mData, copy_count * sizeof(float));
+            } else if (is_signed_int && bits_per_channel == 16) {
+                const int16_t *src = (const int16_t *)ab.mData;
+                size_t available = ab.mDataByteSize / sizeof(int16_t);
+                size_t count = sample_count < available ? sample_count : available;
+                for (size_t i = 0; i < count; i++) {
+                    working[i] = (float)src[i] / 32768.0f;
+                }
+            }
+        }
+    }
+
+    int encode_sample_rate = sample_rate;
+    int encode_channels = channels;
+    int encode_frames = num_frames;
+
+    if (encode_sample_rate > 48000) {
+        int resampled_frames = 0;
+        float *resampled = resample_interleaved_linear(working, encode_frames, encode_channels,
+                                                       encode_sample_rate, 48000, &resampled_frames);
+        if (resampled && resampled_frames > 0) {
+            free(working);
+            working = resampled;
+            encode_frames = resampled_frames;
+            encode_sample_rate = 48000;
+        }
+    }
+
+    if (encode_channels == 1) {
+        float *stereo = expand_mono_to_stereo(working, encode_frames);
+        if (stereo) {
+            free(working);
+            working = stereo;
+            encode_channels = 2;
+        }
+    }
+
+    if (encode_frames <= 0) {
+        free(working);
+        free(audio_list);
+        if (block_buffer) {
+            CFRelease(block_buffer);
+        }
+        return;
+    }
+
+    if (!_audio_encoder || _audio_sample_rate != encode_sample_rate || _audio_channels != encode_channels) {
+        if (_audio_encoder) {
+            aac_encoder_destroy(_audio_encoder);
+            _audio_encoder = NULL;
+        }
+
+        _audio_encoder = aac_encoder_create(encode_sample_rate, encode_channels, 128000);
+        if (!_audio_encoder) {
+            free(working);
+            free(audio_list);
+            if (block_buffer) {
+                CFRelease(block_buffer);
+            }
+            return;
+        }
+
+        _audio_sample_rate = _audio_encoder->sample_rate;
+        _audio_channels = _audio_encoder->channels;
+        _pipeline_ctx->audio_sample_rate = _audio_encoder->sample_rate;
+        _pipeline_ctx->audio_channels = _audio_encoder->channels;
+        _audio_next_pts_us = 0;
+        _audio_pts_initialized = NO;
+        NSLog(@"stream_manager: audio encoder configured %d Hz, %d ch (input %d Hz, %d ch)",
+              _audio_encoder->sample_rate, _audio_encoder->channels, sample_rate, channels);
+    }
+
+    uint64_t pts_us = 0;
+    if (!_audio_pts_initialized) {
+        _audio_next_pts_us = 0;
+        _audio_pts_initialized = YES;
+    }
+    pts_us = _audio_next_pts_us;
+    _audio_next_pts_us += (uint64_t)((double)encode_frames * 1000000.0 / (double)_audio_sample_rate);
+
+        aac_encoder_encode_pcm(_audio_encoder, working, encode_frames, pts_us, encoded_audio_cb, _pipeline_ctx);
+
+        free(working);
+        free(audio_list);
+        if (block_buffer) {
+            CFRelease(block_buffer);
+        }
+    }
+}
+
 /**
  * Clean up all resources when the manager is deallocated.
  */
@@ -543,6 +863,229 @@ static NSImage *generateQRCode(NSString *string, CGFloat size)
 } // end of function dealloc
 
 @end
+
+/* ================================================================== */
+/* Internal AAC encoder (PCM float -> AAC LC raw frames)               */
+/* ================================================================== */
+
+typedef struct {
+    const float *pcm;
+    UInt32 frames;
+    UInt32 channels;
+} aac_input_ctx_t;
+
+static OSStatus
+aac_input_data_proc(AudioConverterRef inAudioConverter,
+                    UInt32 *ioNumberDataPackets,
+                    AudioBufferList *ioData,
+                    AudioStreamPacketDescription **outDataPacketDescription,
+                    void *inUserData)
+{
+    (void)inAudioConverter;
+    (void)outDataPacketDescription;
+
+    aac_input_ctx_t *ctx = (aac_input_ctx_t *)inUserData;
+    if (!ctx || !ctx->pcm || !ioNumberDataPackets || *ioNumberDataPackets == 0 || ctx->frames == 0) {
+        *ioNumberDataPackets = 0;
+        return -1;
+    }
+
+    ioData->mNumberBuffers = 1;
+    ioData->mBuffers[0].mNumberChannels = ctx->channels;
+    ioData->mBuffers[0].mData = (void *)ctx->pcm;
+    ioData->mBuffers[0].mDataByteSize = ctx->frames * ctx->channels * sizeof(float);
+    *ioNumberDataPackets = ctx->frames;
+    return noErr;
+}
+
+static aac_encoder_t *
+aac_encoder_create(int sample_rate, int channels, int bitrate)
+{
+    if (sample_rate <= 0 || channels <= 0) {
+        return NULL;
+    }
+
+    aac_encoder_t *enc = calloc(1, sizeof(aac_encoder_t));
+    if (!enc) {
+        return NULL;
+    }
+
+    enc->sample_rate = sample_rate;
+    enc->channels = channels;
+    enc->bitrate = bitrate > 0 ? bitrate : 128000;
+    enc->pcm_capacity_frames = 8192;
+    enc->pcm_frames = 0;
+    enc->pts_initialized = 0;
+    enc->next_pts_us = 0;
+    enc->pcm_buffer = calloc((size_t)enc->pcm_capacity_frames * (size_t)channels, sizeof(float));
+    if (!enc->pcm_buffer) {
+        free(enc);
+        return NULL;
+    }
+
+    memset(&enc->in_asbd, 0, sizeof(enc->in_asbd));
+    enc->in_asbd.mSampleRate = (Float64)sample_rate;
+    enc->in_asbd.mFormatID = kAudioFormatLinearPCM;
+    enc->in_asbd.mFormatFlags = kAudioFormatFlagsNativeEndian | kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked;
+    enc->in_asbd.mBitsPerChannel = 32;
+    enc->in_asbd.mChannelsPerFrame = (UInt32)channels;
+    enc->in_asbd.mFramesPerPacket = 1;
+    enc->in_asbd.mBytesPerFrame = (UInt32)(channels * (int)sizeof(float));
+    enc->in_asbd.mBytesPerPacket = enc->in_asbd.mBytesPerFrame;
+
+    memset(&enc->out_asbd, 0, sizeof(enc->out_asbd));
+    enc->out_asbd.mSampleRate = (Float64)sample_rate;
+    enc->out_asbd.mFormatID = kAudioFormatMPEG4AAC;
+    enc->out_asbd.mFormatFlags = kMPEG4Object_AAC_LC;
+    enc->out_asbd.mChannelsPerFrame = (UInt32)channels;
+
+    UInt32 out_asbd_size = sizeof(enc->out_asbd);
+    OSStatus format_status = AudioFormatGetProperty(kAudioFormatProperty_FormatInfo,
+                                                    0, NULL,
+                                                    &out_asbd_size, &enc->out_asbd);
+    if (format_status != noErr) {
+        free(enc->pcm_buffer);
+        free(enc);
+        return NULL;
+    }
+
+    OSStatus create_status = AudioConverterNew(&enc->in_asbd, &enc->out_asbd, &enc->converter);
+    if (create_status != noErr || !enc->converter) {
+        free(enc->pcm_buffer);
+        free(enc);
+        return NULL;
+    }
+
+    UInt32 br = (UInt32)enc->bitrate;
+    AudioConverterSetProperty(enc->converter, kAudioConverterEncodeBitRate, sizeof(br), &br);
+
+    return enc;
+}
+
+static void
+aac_encoder_destroy(aac_encoder_t *enc)
+{
+    if (!enc) {
+        return;
+    }
+
+    if (enc->converter) {
+        AudioConverterDispose(enc->converter);
+        enc->converter = NULL;
+    }
+    if (enc->pcm_buffer) {
+        free(enc->pcm_buffer);
+        enc->pcm_buffer = NULL;
+    }
+    free(enc);
+}
+
+static int
+aac_encoder_ensure_pcm_capacity(aac_encoder_t *enc, int needed_frames)
+{
+    if (!enc) {
+        return -1;
+    }
+    if (needed_frames <= enc->pcm_capacity_frames) {
+        return 0;
+    }
+
+    int new_capacity = enc->pcm_capacity_frames;
+    while (new_capacity < needed_frames) {
+        new_capacity *= 2;
+    }
+
+    size_t sample_count = (size_t)new_capacity * (size_t)enc->channels;
+    float *new_buf = realloc(enc->pcm_buffer, sample_count * sizeof(float));
+    if (!new_buf) {
+        return -1;
+    }
+
+    enc->pcm_buffer = new_buf;
+    enc->pcm_capacity_frames = new_capacity;
+    return 0;
+}
+
+static int
+aac_encoder_encode_pcm(aac_encoder_t *enc, const float *samples, int num_frames,
+                       uint64_t pts,
+                       void (*callback)(uint8_t *data, int len, uint64_t pts, void *ctx),
+                       void *callback_ctx)
+{
+    if (!enc || !samples || num_frames <= 0 || !enc->converter) {
+        return -1;
+    }
+
+    if (!enc->pts_initialized) {
+        enc->next_pts_us = pts;
+        enc->pts_initialized = 1;
+    } else {
+        /* Re-anchor if external clock drifts significantly. */
+        uint64_t delta = enc->next_pts_us > pts ? enc->next_pts_us - pts : pts - enc->next_pts_us;
+        if (delta > 2000000ULL) {
+            enc->next_pts_us = pts;
+        }
+    }
+
+    int needed_frames = enc->pcm_frames + num_frames;
+    if (aac_encoder_ensure_pcm_capacity(enc, needed_frames) != 0) {
+        return -1;
+    }
+
+    size_t dst_offset = (size_t)enc->pcm_frames * (size_t)enc->channels;
+    size_t copy_samples = (size_t)num_frames * (size_t)enc->channels;
+    memcpy(enc->pcm_buffer + dst_offset, samples, copy_samples * sizeof(float));
+    enc->pcm_frames += num_frames;
+
+    const int aac_frame_samples = 1024;
+
+    while (enc->pcm_frames >= aac_frame_samples) {
+        aac_input_ctx_t input_ctx;
+        input_ctx.pcm = enc->pcm_buffer;
+        input_ctx.frames = (UInt32)aac_frame_samples;
+        input_ctx.channels = (UInt32)enc->channels;
+
+        uint8_t out_buf[8192];
+        AudioBufferList out_list;
+        out_list.mNumberBuffers = 1;
+        out_list.mBuffers[0].mNumberChannels = (UInt32)enc->channels;
+        out_list.mBuffers[0].mData = out_buf;
+        out_list.mBuffers[0].mDataByteSize = sizeof(out_buf);
+
+        UInt32 out_packets = 1;
+        AudioStreamPacketDescription out_desc = {0};
+        OSStatus enc_status = AudioConverterFillComplexBuffer(
+            enc->converter,
+            aac_input_data_proc,
+            &input_ctx,
+            &out_packets,
+            &out_list,
+            &out_desc
+        );
+
+        if (enc_status == noErr && out_packets > 0 && out_list.mBuffers[0].mDataByteSize > 0 && callback) {
+            uint8_t *copy = malloc(out_list.mBuffers[0].mDataByteSize);
+            if (copy) {
+                memcpy(copy, out_list.mBuffers[0].mData, out_list.mBuffers[0].mDataByteSize);
+                callback(copy, (int)out_list.mBuffers[0].mDataByteSize, enc->next_pts_us, callback_ctx);
+                free(copy);
+            }
+        }
+
+        enc->next_pts_us += (uint64_t)((double)aac_frame_samples * 1000000.0 / (double)enc->sample_rate);
+
+        int remaining_frames = enc->pcm_frames - aac_frame_samples;
+        if (remaining_frames > 0) {
+            size_t remaining_samples = (size_t)remaining_frames * (size_t)enc->channels;
+            memmove(enc->pcm_buffer,
+                    enc->pcm_buffer + ((size_t)aac_frame_samples * (size_t)enc->channels),
+                    remaining_samples * sizeof(float));
+        }
+        enc->pcm_frames = remaining_frames;
+    }
+
+    return 0;
+}
 
 /* ================================================================== */
 /* C callback functions (static, pipeline glue)                        */
@@ -602,6 +1145,8 @@ encoded_frame_cb(uint8_t *data, int len, bool is_keyframe,
         return;
     }
 
+    pthread_mutex_lock(&pipeline->muxer_lock);
+
     /* Update SPS/PPS on the muxer whenever new parameter sets arrive */
     if (sps && sps_len > 0 && pps && pps_len > 0) {
         ts_muxer_set_sps_pps(pipeline->muxer,
@@ -612,13 +1157,30 @@ encoded_frame_cb(uint8_t *data, int len, bool is_keyframe,
 
     /* Only push data if we have SPS/PPS configured */
     if (!pipeline->sps_pps_sent) {
+        pthread_mutex_unlock(&pipeline->muxer_lock);
         return;
     }
 
     ts_muxer_push_h264(pipeline->muxer,
                         data, (size_t)len,
                         pts, is_keyframe ? 1 : 0);
+
+    pthread_mutex_unlock(&pipeline->muxer_lock);
 } // end of function encoded_frame_cb()
+
+static void
+encoded_audio_cb(uint8_t *data, int len, uint64_t pts, void *ctx)
+{
+    pipeline_ctx_t *pipeline = (pipeline_ctx_t *)ctx;
+    if (!pipeline || !pipeline->muxer || !data || len <= 0) {
+        return;
+    }
+
+    pthread_mutex_lock(&pipeline->muxer_lock);
+    ts_muxer_push_aac(pipeline->muxer, data, (size_t)len, pts,
+                      pipeline->audio_sample_rate, pipeline->audio_channels);
+    pthread_mutex_unlock(&pipeline->muxer_lock);
+}
 
 /**
  * TS segment callback. Called when a complete MPEG-TS segment is ready.

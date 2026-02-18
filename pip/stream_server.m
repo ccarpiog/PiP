@@ -365,15 +365,22 @@ accept_connection(stream_server_t *server)
             break;
         }
 
-        /* Keep accepted sockets in blocking mode for simple write-all semantics.
-           listen_fd is non-blocking so it can be drained safely in this loop. */
+        /* Keep accepted sockets non-blocking so a slow/stalled client cannot
+           block the entire serial server queue while we stream TS data. */
         int client_flags = fcntl(client_fd, F_GETFL, 0);
-        if (client_flags >= 0 && (client_flags & O_NONBLOCK)) {
-            if (fcntl(client_fd, F_SETFL, client_flags & ~O_NONBLOCK) < 0) {
-                NSLog(@"stream_server: failed to clear O_NONBLOCK on fd=%d", client_fd);
-                close(client_fd);
-                continue;
-            }
+        if (client_flags < 0 || fcntl(client_fd, F_SETFL, client_flags | O_NONBLOCK) < 0) {
+            NSLog(@"stream_server: failed to set O_NONBLOCK on fd=%d", client_fd);
+            close(client_fd);
+            continue;
+        }
+
+        /* Prevent process-wide SIGPIPE termination if a client disconnects
+           while we are writing a response body. */
+        int no_sigpipe = 1;
+        if (setsockopt(client_fd, SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe, sizeof(no_sigpipe)) < 0) {
+            NSLog(@"stream_server: failed to set SO_NOSIGPIPE on fd=%d", client_fd);
+            close(client_fd);
+            continue;
         }
 
         /* Find a free connection slot */
@@ -657,17 +664,24 @@ send_response(int fd, int status_code, const char *status_text,
 static int
 write_all(int fd, const uint8_t *data, size_t len)
 {
+    const int max_eagain_retries = 250; /* ~250ms with 1ms sleep */
+    int eagain_retries = 0;
     size_t total_written = 0;
     while (total_written < len) {
         ssize_t written = write(fd, data + total_written, len - total_written);
         if (written > 0) {
             total_written += (size_t)written;
+            eagain_retries = 0;
             continue;
         }
         if (written < 0 && errno == EINTR) {
             continue;
         }
         if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            eagain_retries++;
+            if (eagain_retries >= max_eagain_retries) {
+                return -1;
+            }
             usleep(1000);
             continue;
         }

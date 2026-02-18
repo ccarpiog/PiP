@@ -13,6 +13,7 @@
 #define stream_manager_h
 
 #import <Foundation/Foundation.h>
+#import <CoreMedia/CoreMedia.h>
 
 @class ImageView;
 
@@ -99,6 +100,13 @@ typedef enum {
  * @return Array of IP address strings
  */
 - (NSArray<NSString *> *)localIPAddresses;
+
+/**
+ * Push a captured audio CMSampleBuffer into the live stream pipeline.
+ * Intended for audio buffers received from ScreenCaptureKit.
+ * @param sampleBuffer Audio sample buffer
+ */
+- (void)pushAudioSampleBuffer:(CMSampleBufferRef)sampleBuffer;
 
 @end
 

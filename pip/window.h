@@ -56,7 +56,7 @@
 - (void) setEnable:(bool) en;
 @end
 
-@interface Window : NSPanel<NSWindowDelegate, SelectionViewDelegate, ImageRendererDelegate, WindowDelegate, RootViewDelegate, ButtonDelegate, PIPViewControllerDelegate, HLSPlayerDelegate, AVCaptureVideoDataOutputSampleBufferDelegate
+@interface Window : NSPanel<NSWindowDelegate, SelectionViewDelegate, ImageRendererDelegate, WindowDelegate, RootViewDelegate, ButtonDelegate, PIPViewControllerDelegate, HLSPlayerDelegate, AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate
 #ifndef NO_AIRPLAY
 , AirPlayDiscoveryDelegate
 #endif

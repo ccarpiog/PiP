@@ -29,9 +29,12 @@
 #define PID_PAT             0x0000
 #define PID_PMT             0x1000
 #define PID_VIDEO           0x0100
+#define PID_AUDIO           0x0101
 
 #define STREAM_TYPE_H264    0x1B
+#define STREAM_TYPE_AAC     0x0F
 #define STREAM_ID_VIDEO     0xE0
+#define STREAM_ID_AUDIO     0xC0
 
 #define INITIAL_BUFFER_SIZE (256 * 1024)  /* 256 KB */
 #define PCR_INTERVAL_90KHZ 3600          /* 40ms in 90kHz ticks */
@@ -115,6 +118,13 @@ struct ts_muxer_s {
     uint8_t cc_pat;
     uint8_t cc_pmt;
     uint8_t cc_video;
+    uint8_t cc_audio;
+
+    /* AAC configuration used to build ADTS headers */
+    int audio_sample_rate;
+    int audio_channels;
+    int has_audio;
+    int segment_audio_enabled;
 
     /* Startup/resync state: drop frames until first IDR */
     int waiting_for_keyframe;
@@ -255,7 +265,7 @@ write_pat(ts_muxer_t *muxer)
  *   section_syntax (1)   = 1
  *   '0' (1)              = 0
  *   reserved (2)         = 0x3
- *   section_length (12)  = 18 (5 header + 4 program_info + 5 stream_entry + 4 CRC)
+ *   section_length (12)  = 18 (video only) or 23 (video + audio)
  *   program_number (16)  = 0x0001
  *   reserved (2)         = 0x3
  *   version (5)          = 0
@@ -266,10 +276,16 @@ write_pat(ts_muxer_t *muxer)
  *   PCR_PID (13)         = 0x0100
  *   reserved (4)         = 0xF
  *   program_info_length (12) = 0
- *   -- stream entry --
+ *   -- stream entry (video) --
  *   stream_type (8)      = 0x1B (H.264)
  *   reserved (3)         = 0x7
  *   elementary_PID (13)  = 0x0100
+ *   reserved (4)         = 0xF
+ *   ES_info_length (12)  = 0
+ *   -- optional stream entry (audio) --
+ *   stream_type (8)      = 0x0F (AAC/ADTS)
+ *   reserved (3)         = 0x7
+ *   elementary_PID (13)  = 0x0101
  *   reserved (4)         = 0xF
  *   ES_info_length (12)  = 0
  *   CRC32 (32)
@@ -298,9 +314,10 @@ write_pmt(ts_muxer_t *muxer)
     uint8_t *p = &packet[section_start];
 
     p[0] = 0x02;  /* table_id */
-    /* section_syntax_indicator=1, '0'=0, reserved=11, section_length=18 */
+    int section_length = muxer->has_audio ? 23 : 18;
+    /* section_syntax_indicator=1, '0'=0, reserved=11 */
     p[1] = 0xB0;
-    p[2] = 18;    /* section_length: 5 header + 4 program_info + 5 stream + 4 CRC */
+    p[2] = (uint8_t)section_length;
     p[3] = 0x00;  /* program_number high */
     p[4] = 0x01;  /* program_number low */
     /* reserved=11, version=00000, current_next=1 */
@@ -323,12 +340,24 @@ write_pmt(ts_muxer_t *muxer)
     p[15] = 0xF0;
     p[16] = 0x00;
 
-    /* CRC32 over section data (from table_id through stream entry) */
-    uint32_t crc = crc32_mpeg2(p, 17);
-    p[17] = (crc >> 24) & 0xFF;
-    p[18] = (crc >> 16) & 0xFF;
-    p[19] = (crc >> 8) & 0xFF;
-    p[20] = crc & 0xFF;
+    int section_data_len = 17; /* through video entry */
+
+    if (muxer->has_audio) {
+        /* Optional stream entry: AAC audio on PID 0x0101 */
+        p[17] = STREAM_TYPE_AAC;
+        p[18] = 0xE0 | ((PID_AUDIO >> 8) & 0x1F);
+        p[19] = PID_AUDIO & 0xFF;
+        p[20] = 0xF0;
+        p[21] = 0x00;
+        section_data_len = 22;
+    }
+
+    /* CRC32 over section data (from table_id through stream entries) */
+    uint32_t crc = crc32_mpeg2(p, (size_t)section_data_len);
+    p[section_data_len + 0] = (crc >> 24) & 0xFF;
+    p[section_data_len + 1] = (crc >> 16) & 0xFF;
+    p[section_data_len + 2] = (crc >> 8) & 0xFF;
+    p[section_data_len + 3] = crc & 0xFF;
 
     return append_ts_packet(muxer, packet);
 } // end of function write_pmt()
@@ -662,6 +691,148 @@ write_pes_packets(ts_muxer_t *muxer, uint8_t *au_data, size_t au_size,
 } // end of function write_pes_packets()
 
 /**
+ * Map AAC sample rate (Hz) to ADTS sampling_frequency_index.
+ * Falls back to 48 kHz index when unknown.
+ */
+static int
+aac_sample_rate_index(int sample_rate)
+{
+    static const int rates[] = {
+        96000, 88200, 64000, 48000, 44100, 32000,
+        24000, 22050, 16000, 12000, 11025, 8000, 7350
+    };
+
+    for (int i = 0; i < (int)(sizeof(rates) / sizeof(rates[0])); i++) {
+        if (rates[i] == sample_rate) {
+            return i;
+        }
+    }
+    return 3; /* 48kHz */
+}
+
+/**
+ * Build a 7-byte ADTS header for one AAC-LC frame.
+ */
+static void
+build_adts_header(uint8_t *hdr, size_t aac_payload_size, int sample_rate, int channels)
+{
+    int sr_idx = aac_sample_rate_index(sample_rate);
+    int chan = channels < 1 ? 2 : channels;
+    if (chan > 7) {
+        chan = 2;
+    }
+
+    size_t frame_len = aac_payload_size + 7;
+
+    /* MPEG-4 AAC LC, no CRC */
+    hdr[0] = 0xFF;
+    hdr[1] = 0xF1; /* 1111 1 00 1: sync + MPEG-4 + layer + protection_absent */
+    hdr[2] = (uint8_t)(((2 - 1) << 6) | ((sr_idx & 0x0F) << 2) | ((chan >> 2) & 0x01));
+    hdr[3] = (uint8_t)(((chan & 0x03) << 6) | ((frame_len >> 11) & 0x03));
+    hdr[4] = (uint8_t)((frame_len >> 3) & 0xFF);
+    hdr[5] = (uint8_t)(((frame_len & 0x07) << 5) | 0x1F);
+    hdr[6] = 0xFC;
+}
+
+/**
+ * Write a PES-wrapped AAC frame as TS packets on the audio PID.
+ */
+static int
+write_pes_audio_packets(ts_muxer_t *muxer, uint8_t *adts_frame, size_t adts_size, uint64_t pts_us)
+{
+    uint64_t pts_90khz = pts_us * 90 / 1000;
+
+    uint8_t pes_header[14];
+    pes_header[0] = 0x00;
+    pes_header[1] = 0x00;
+    pes_header[2] = 0x01;
+    pes_header[3] = STREAM_ID_AUDIO;
+
+    /* PES length includes bytes after this field: 3 + 5 + payload */
+    uint32_t pes_len = (uint32_t)(adts_size + 8);
+    if (pes_len > 0xFFFF) {
+        pes_len = 0;
+    }
+    pes_header[4] = (uint8_t)((pes_len >> 8) & 0xFF);
+    pes_header[5] = (uint8_t)(pes_len & 0xFF);
+    pes_header[6] = 0x80;
+    pes_header[7] = 0x80; /* PTS only */
+    pes_header[8] = 0x05;
+    write_pts_dts(&pes_header[9], 0x20, pts_90khz);
+
+    size_t pes_header_len = 14;
+    size_t total_payload = pes_header_len + adts_size;
+    size_t payload_pos = 0;
+    int first_packet = 1;
+
+    while (payload_pos < total_payload) {
+        uint8_t packet[TS_PACKET_SIZE];
+        memset(packet, 0xFF, TS_PACKET_SIZE);
+
+        packet[0] = TS_SYNC_BYTE;
+        packet[1] = (first_packet ? 0x40 : 0x00) | ((PID_AUDIO >> 8) & 0x1F);
+        packet[2] = PID_AUDIO & 0xFF;
+
+        size_t header_size = 4;
+        size_t remaining_payload = total_payload - payload_pos;
+        size_t payload_start = header_size;
+        size_t payload_space = TS_PACKET_SIZE - payload_start;
+
+        if (remaining_payload < payload_space) {
+            /* Add adaptation field stuffing on final short packet. */
+            size_t adapt_size = payload_space - remaining_payload;
+            if (adapt_size < 2) {
+                adapt_size = 2;
+            }
+
+            packet[3] = 0x30 | (muxer->cc_audio & 0x0F);
+            muxer->cc_audio = (muxer->cc_audio + 1) & 0x0F;
+
+            size_t af_start = header_size;
+            packet[af_start] = (uint8_t)(adapt_size - 1);
+            packet[af_start + 1] = 0x00;
+            for (size_t s = 2; s < adapt_size; s++) {
+                packet[af_start + s] = 0xFF;
+            }
+
+            payload_start = header_size + adapt_size;
+            payload_space = TS_PACKET_SIZE - payload_start;
+        } else {
+            packet[3] = 0x10 | (muxer->cc_audio & 0x0F);
+            muxer->cc_audio = (muxer->cc_audio + 1) & 0x0F;
+        }
+
+        size_t written = 0;
+        while (written < payload_space && payload_pos < total_payload) {
+            if (payload_pos < pes_header_len) {
+                size_t pes_remaining = pes_header_len - payload_pos;
+                size_t space_remaining = payload_space - written;
+                size_t chunk = (pes_remaining < space_remaining) ? pes_remaining : space_remaining;
+                memcpy(&packet[payload_start + written], &pes_header[payload_pos], chunk);
+                payload_pos += chunk;
+                written += chunk;
+            } else {
+                size_t adts_offset = payload_pos - pes_header_len;
+                size_t adts_remaining = adts_size - adts_offset;
+                size_t space_remaining = payload_space - written;
+                size_t chunk = (adts_remaining < space_remaining) ? adts_remaining : space_remaining;
+                memcpy(&packet[payload_start + written], &adts_frame[adts_offset], chunk);
+                payload_pos += chunk;
+                written += chunk;
+            }
+        }
+
+        if (append_ts_packet(muxer, packet) != 0) {
+            return -1;
+        }
+
+        first_packet = 0;
+    }
+
+    return 0;
+}
+
+/**
  * Drop the current segment due to an error, resetting buffer state
  * and forcing re-sync on the next keyframe.
  * @param muxer The muxer instance
@@ -674,6 +845,7 @@ drop_current_segment(ts_muxer_t *muxer)
     muxer->segment_start_pts = 0;
     muxer->segment_last_pts = 0;
     muxer->waiting_for_keyframe = 1;
+    muxer->segment_audio_enabled = 0;
 } // end of function drop_current_segment()
 
 /**
@@ -701,6 +873,7 @@ emit_segment(ts_muxer_t *muxer)
     muxer->segment_index++;
     muxer->segment_buf_used = 0;
     muxer->segment_has_data = 0;
+    muxer->segment_audio_enabled = 0;
 } // end of function emit_segment()
 
 /* ------------------------------------------------------------------ */
@@ -747,6 +920,11 @@ ts_muxer_create(int segment_duration_seconds, ts_segment_callback_t callback, vo
     muxer->cc_pat = 0;
     muxer->cc_pmt = 0;
     muxer->cc_video = 0;
+    muxer->cc_audio = 0;
+    muxer->audio_sample_rate = 48000;
+    muxer->audio_channels = 2;
+    muxer->has_audio = 0;
+    muxer->segment_audio_enabled = 0;
 
     muxer->waiting_for_keyframe = 1;  /* wait for first IDR before emitting data */
     muxer->next_pcr_90khz = 0;       /* force PCR on first AU */
@@ -835,6 +1013,7 @@ ts_muxer_push_h264(ts_muxer_t *muxer, uint8_t *nal_data, size_t nal_size,
             drop_current_segment(muxer);
             return;
         }
+        muxer->segment_audio_enabled = muxer->has_audio;
     }
 
     /* Convert AVCC to Annex B format */
@@ -857,6 +1036,56 @@ ts_muxer_push_h264(ts_muxer_t *muxer, uint8_t *nal_data, size_t nal_size,
     muxer->segment_last_pts = pts;
     muxer->segment_has_data = 1;
 } // end of function ts_muxer_push_h264()
+
+void
+ts_muxer_push_aac(ts_muxer_t *muxer, uint8_t *aac_data, size_t aac_size,
+                  uint64_t pts, int sample_rate, int channels)
+{
+    if (!muxer || !aac_data || aac_size == 0) {
+        return;
+    }
+
+    /* Keep muxer audio config up to date for ADTS headers. */
+    if (sample_rate > 0) {
+        muxer->audio_sample_rate = sample_rate;
+    }
+    if (channels > 0) {
+        muxer->audio_channels = channels;
+    }
+
+    if (!muxer->has_audio) {
+        /* Enable audio from the next segment boundary to keep PMT and packets aligned. */
+        muxer->has_audio = 1;
+        return;
+    }
+
+    /* Do not start segments from audio before first video keyframe, and only
+       write audio when this segment's PMT advertises an audio stream. */
+    if (muxer->waiting_for_keyframe || !muxer->segment_has_data || !muxer->segment_audio_enabled) {
+        return;
+    }
+
+    uint8_t *adts_frame = malloc(aac_size + 7);
+    if (!adts_frame) {
+        return;
+    }
+
+    build_adts_header(adts_frame, aac_size, muxer->audio_sample_rate, muxer->audio_channels);
+    memcpy(adts_frame + 7, aac_data, aac_size);
+
+    if (write_pes_audio_packets(muxer, adts_frame, aac_size + 7, pts) != 0) {
+        free(adts_frame);
+        drop_current_segment(muxer);
+        return;
+    }
+
+    free(adts_frame);
+
+    if (pts > muxer->segment_last_pts) {
+        muxer->segment_last_pts = pts;
+    }
+    muxer->segment_has_data = 1;
+}
 
 /**
  * Set the SPS and PPS parameter sets for the H.264 stream.
