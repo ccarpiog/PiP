@@ -1140,20 +1140,38 @@ static void displayReconfigurationCallback(CGDirectDisplayID display, CGDisplayC
   [self setupNonHLSControls];
 
   if(!is_airplay_session){
-    int defaultDisplayId = [(NSNumber*)getPref(@"default_display") intValue];
-    if(defaultDisplayId > 0){
-      NSArray* displays = getDisplayList();
-      for(NSDictionary* display in displays){
-        if([display[@"id"] intValue] == defaultDisplayId){
+    NSDictionary* defaultSource = getDefaultSourcePreference();
+    NSString* sourceType = defaultSource[@"type"];
+    if([sourceType isEqualToString:@"display"]){
+      int defaultDisplayId = [defaultSource[@"id"] intValue];
+      if(defaultDisplayId > 0){
+        BOOL hasDisplay = NO;
+        NSArray* displays = getDisplayList();
+        for(NSDictionary* display in displays){
+          if([display[@"id"] intValue] == defaultDisplayId){
+            hasDisplay = YES;
+            break;
+          }
+        } // End of loop through displays
+        if(hasDisplay){
           WindowSel* sel = [WindowSel getDefault];
-          sel.title = display[@"name"];
+          sel.title = getDisplayNameForId(defaultDisplayId);
           sel.dspId = defaultDisplayId;
           NSMenuItem* item = [[NSMenuItem alloc] init];
           [item setRepresentedObject:sel];
           [self changeWindow:item];
-          break;
         }
-      } // End of loop through displays
+      }
+    } else if([sourceType isEqualToString:@"camera"]){
+      NSString* defaultCameraId = defaultSource[@"id"];
+      if(defaultCameraId && defaultCameraId.length > 0 && [AVCaptureDevice deviceWithUniqueID:defaultCameraId]){
+        WindowSel* sel = [WindowSel getDefault];
+        sel.title = getCameraNameForId(defaultCameraId);
+        sel.cameraId = defaultCameraId;
+        NSMenuItem* item = [[NSMenuItem alloc] init];
+        [item setRepresentedObject:sel];
+        [self changeWindow:item];
+      }
     }
   } // End of if not airplay session
 
@@ -1955,10 +1973,11 @@ static void displayReconfigurationCallback(CGDirectDisplayID display, CGDisplayC
   // Add camera menu
   cameras = [AVCaptureDevice devicesWithMediaType:AVMediaTypeVideo];
   for(AVCaptureDevice *camera in cameras){
+    NSString* cameraName = getCameraNameForId([camera uniqueID]);
     WindowSel* sel = [WindowSel getDefault];
-    sel.title = [camera localizedName];
+    sel.title = cameraName;
     sel.cameraId = [camera uniqueID];
-    ADD_MENU_ITEM(camera_menu, [camera localizedName], @selector(changeWindow:), NULL, {
+    ADD_MENU_ITEM(camera_menu, cameraName, @selector(changeWindow:), NULL, {
       [item setRepresentedObject:sel];
     })
   }

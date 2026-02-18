@@ -9,12 +9,49 @@
 #import "preferences.h"
 #import <QuartzCore/QuartzCore.h>
 #import <IOKit/graphics/IOGraphicsLib.h>
+#import <AVFoundation/AVFoundation.h>
 #if __has_include(<ScreenCaptureKit/ScreenCaptureKit.h>)
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #endif
 
 Preferences* global_pref = nil;
-static NSPanel* displayNamesPanel = nil;
+static NSPanel* sourceNamesPanel = nil;
+
+static NSDictionary* sourceNone(void){
+  return @{@"type": @"none"};
+}
+
+static NSDictionary* sourceFromDisplayId(NSNumber* displayId){
+  return @{@"type": @"display", @"id": displayId};
+}
+
+static NSDictionary* sourceFromCameraId(NSString* cameraId){
+  return @{@"type": @"camera", @"id": cameraId};
+}
+
+static NSDictionary* normalizeSourcePreference(NSObject* source){
+  if([source isKindOfClass:[NSDictionary class]]){
+    NSDictionary* sourceDict = (NSDictionary*)source;
+    NSString* type = sourceDict[@"type"];
+    NSObject* sourceId = sourceDict[@"id"];
+    if([type isEqualToString:@"display"] && [sourceId isKindOfClass:[NSNumber class]] && [(NSNumber*)sourceId intValue] > 0){
+      return sourceFromDisplayId((NSNumber*)sourceId);
+    }
+    if([type isEqualToString:@"camera"] && [sourceId isKindOfClass:[NSString class]] && ((NSString*)sourceId).length > 0){
+      return sourceFromCameraId((NSString*)sourceId);
+    }
+    if([type isEqualToString:@"none"]){
+      return sourceNone();
+    }
+  }
+  if([source isKindOfClass:[NSNumber class]] && [(NSNumber*)source intValue] > 0){
+    return sourceFromDisplayId((NSNumber*)source);
+  }
+  if([source isKindOfClass:[NSString class]] && ((NSString*)source).length > 0){
+    return sourceFromCameraId((NSString*)source);
+  }
+  return sourceNone();
+}
 
 /**
  * Gets a stable identifier for a display using EDID data (vendor, model, serial).
@@ -56,6 +93,18 @@ NSString* getCustomDisplayNameForId(CGDirectDisplayID displayId){
 } // End of getCustomDisplayNameForId()
 
 /**
+ * Gets the custom camera name for a given camera unique ID.
+ * @param cameraId The AVCaptureDevice unique ID
+ * @return The custom name if set, otherwise nil
+ */
+NSString* getCustomCameraNameForId(NSString* cameraId){
+  if(!cameraId || cameraId.length == 0) return nil;
+  NSDictionary* customNames = (NSDictionary*)getPref(@"camera_custom_names");
+  if(!customNames) return nil;
+  return customNames[cameraId];
+} // End of getCustomCameraNameForId()
+
+/**
  * Gets the display name for a given display ID, using custom name if available.
  * @param displayId The CGDirectDisplayID of the display
  * @return The custom name if set, otherwise the system localized name
@@ -75,6 +124,23 @@ NSString* getDisplayNameForId(CGDirectDisplayID displayId){
   } // End of loop through screens
   return [NSString stringWithFormat:@"Display %u", displayId];
 } // End of getDisplayNameForId()
+
+/**
+ * Gets the camera name for a given camera ID, using custom name if available.
+ * @param cameraId The AVCaptureDevice unique ID
+ * @return The custom name if set, otherwise the system camera name
+ */
+NSString* getCameraNameForId(NSString* cameraId){
+  NSString* customName = getCustomCameraNameForId(cameraId);
+  if(customName && customName.length > 0) return customName;
+
+  AVCaptureDevice* camera = [AVCaptureDevice deviceWithUniqueID:cameraId];
+  if(camera){
+    NSString* localizedName = [camera localizedName];
+    if(localizedName && localizedName.length > 0) return localizedName;
+  }
+  return cameraId && cameraId.length > 0 ? cameraId : @"Camera";
+} // End of getCameraNameForId()
 
 /**
  * Sets a custom display name for a given display ID.
@@ -108,6 +174,26 @@ void setCustomDisplayName(CGDirectDisplayID displayId, NSString* name){
 } // End of setCustomDisplayName()
 
 /**
+ * Sets a custom camera name for a given camera unique ID.
+ * @param cameraId The AVCaptureDevice unique ID
+ * @param name The custom name to set (empty string to clear)
+ */
+void setCustomCameraName(NSString* cameraId, NSString* name){
+  if(!cameraId || cameraId.length == 0) return;
+
+  NSDictionary* existingNames = (NSDictionary*)[[NSUserDefaults standardUserDefaults] objectForKey:@"camera_custom_names"];
+  NSMutableDictionary* customNames = existingNames ? [existingNames mutableCopy] : [[NSMutableDictionary alloc] init];
+
+  if(name && name.length > 0){
+    customNames[cameraId] = name;
+  } else {
+    [customNames removeObjectForKey:cameraId];
+  }
+
+  [[NSUserDefaults standardUserDefaults] setObject:customNames forKey:@"camera_custom_names"];
+} // End of setCustomCameraName()
+
+/**
  * Gets the list of available displays with their names (using custom names if set).
  * @return An array of dictionaries with "name" and "id" keys
  */
@@ -123,12 +209,75 @@ NSArray* getDisplayList(void){
   return displays;
 } // End of getDisplayList()
 
+/**
+ * Returns the default source preference with migration from legacy default_display.
+ * @return A dictionary in the form {type: "none|display|camera", id: ...}
+ */
+NSDictionary* getDefaultSourcePreference(void){
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  NSObject* sourcePref = [defaults objectForKey:@"default_source"];
+  if(sourcePref){
+    NSDictionary* normalized = normalizeSourcePreference(sourcePref);
+    if(![normalized isEqual:sourcePref]){
+      [defaults setObject:normalized forKey:@"default_source"];
+    }
+    return normalized;
+  }
+
+  NSObject* legacyDefaultDisplay = [defaults objectForKey:@"default_display"];
+  NSDictionary* migrated = normalizeSourcePreference(legacyDefaultDisplay);
+  [defaults setObject:migrated forKey:@"default_source"];
+  return migrated;
+} // End of getDefaultSourcePreference()
+
+/**
+ * Gets the list of available capture sources (displays + cameras).
+ * @return An array of dictionaries with "name" and "value" keys
+ */
+NSArray* getSourceList(void){
+  NSMutableArray* sources = [[NSMutableArray alloc] init];
+  [sources addObject:@{@"name": @"None", @"value": sourceNone()}];
+
+  NSMutableArray* displaySources = [[NSMutableArray alloc] init];
+  for(NSScreen* screen in [NSScreen screens]){
+    NSDictionary* dict = [screen deviceDescription];
+    CGDirectDisplayID did = [dict[@"NSScreenNumber"] unsignedIntValue];
+    NSString* name = [NSString stringWithFormat:@"Display - %@", getDisplayNameForId(did)];
+    [displaySources addObject:@{
+      @"name": name,
+      @"value": sourceFromDisplayId([NSNumber numberWithUnsignedInt:did]),
+    }];
+  }
+  [displaySources sortUsingComparator:^NSComparisonResult(NSDictionary* a, NSDictionary* b) {
+    return [a[@"name"] localizedCaseInsensitiveCompare:b[@"name"]];
+  }];
+  [sources addObjectsFromArray:displaySources];
+
+  NSMutableArray* cameraSources = [[NSMutableArray alloc] init];
+  NSArray<AVCaptureDevice*>* cameras = [AVCaptureDevice devicesWithMediaType:AVMediaTypeVideo];
+  for(AVCaptureDevice* camera in cameras){
+    NSString* cameraId = [camera uniqueID];
+    if(!cameraId || cameraId.length == 0) continue;
+    NSString* name = [NSString stringWithFormat:@"Camera - %@", getCameraNameForId(cameraId)];
+    [cameraSources addObject:@{
+      @"name": name,
+      @"value": sourceFromCameraId(cameraId),
+    }];
+  }
+  [cameraSources sortUsingComparator:^NSComparisonResult(NSDictionary* a, NSDictionary* b) {
+    return [a[@"name"] localizedCaseInsensitiveCompare:b[@"name"]];
+  }];
+  [sources addObjectsFromArray:cameraSources];
+
+  return sources;
+} // End of getSourceList()
+
 typedef enum{
   OptionTypeNumber,
   OptionTypeSelect,
   OptionTypeCheckBox,
   OptionTypeTextInput,
-  OptionTypeDisplaySelect,
+  OptionTypeSourceSelect,
   OptionTypeButton,
 } OptionType;
 
@@ -139,8 +288,8 @@ static NSArray* getPrefsArray(void){
   NSMutableArray* prefs = [NSMutableArray arrayWithArray:@[
     OPTION(hidpi, "Use HiDPI mode", CheckBox, [NSNull null], @1, @"on supported displays"),
     OPTION(renderer, "Display Renderer", Select, (@[@"Metal", @"Opengl"]), [NSNumber numberWithInt:DisplayRendererTypeOpenGL], [NSNull null]),
-    OPTION(default_display, "Default Display", DisplaySelect, [NSNull null], @-1, [NSNull null]),
-    OPTION(display_names, "Display Names", Button, [NSNull null], [NSNull null], @"Configure..."),
+    OPTION(default_source, "Default Source", SourceSelect, [NSNull null], sourceNone(), [NSNull null]),
+    OPTION(source_names, "Source Names", Button, [NSNull null], [NSNull null], @"Configure..."),
     #ifndef NO_AIRPLAY
     OPTION(airplay, "AirPlay Receiver", CheckBox, [NSNull null], @0, @"Use PiP as Airplay receiver"),
     OPTION(airplay_scale_factor, "AirPlay Scale factor", Select, (@[@"1.00", @"2.00", @"3.00", @"Default"]), @3, [NSNull null]),
@@ -288,15 +437,15 @@ NSObject* getPrefOption(NSString* key){
   setPref(sender.identifier, [NSNumber numberWithLong:index]);
 }
 
-- (void)onDisplaySelect:(NSMenuItem*)sender{
-  NSNumber* displayId = [sender representedObject];
-//  NSLog(@"onDisplaySelect: %@ -> %@", sender.identifier, displayId);
-  setPref(sender.identifier, displayId);
+- (void)onSourceSelect:(NSMenuItem*)sender{
+  NSDictionary* source = normalizeSourcePreference([sender representedObject]);
+//  NSLog(@"onSourceSelect: %@ -> %@", sender.identifier, source);
+  setPref(sender.identifier, source);
 }
 
 - (void)onButtonClick:(NSButton*)sender{
-  if([sender.identifier isEqual:@"display_names"]){
-    showDisplayNamesPanel();
+  if([sender.identifier isEqual:@"source_names"]){
+    showSourceNamesPanel();
   }
 } // End of onButtonClick()
 
@@ -384,23 +533,24 @@ NSObject* getPrefOption(NSString* key){
         view = textField;
         break;
       }
-      case OptionTypeDisplaySelect:{
+      case OptionTypeSourceSelect:{
         NSPopUpButton* button = [[NSPopUpButton alloc] init];
         button.translatesAutoresizingMaskIntoConstraints = false;
         button.menu = [[NSMenu alloc] init];
 
-        NSArray* displays = getDisplayList();
-        int savedDisplayId = [(NSNumber*)value intValue];
+        NSDictionary* savedSource = getDefaultSourcePreference();
+        NSArray* sources = getSourceList();
         int selectedIndex = 0;
-        for(int i = 0; i < displays.count; i++){
-          NSDictionary* display = displays[i];
-          NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:display[@"name"] action:@selector(onDisplaySelect:) keyEquivalent:@""];
+        for(int i = 0; i < sources.count; i++){
+          NSDictionary* source = sources[i];
+          NSDictionary* sourceValue = normalizeSourcePreference(source[@"value"]);
+          NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:source[@"name"] action:@selector(onSourceSelect:) keyEquivalent:@""];
           item.target = self;
           item.identifier = key;
-          item.representedObject = display[@"id"];
+          item.representedObject = sourceValue;
           [button.menu addItem:item];
-          if([display[@"id"] intValue] == savedDisplayId) selectedIndex = i;
-        } // End of loop through displays
+          if([sourceValue isEqual:savedSource]) selectedIndex = i;
+        } // End of loop through sources
         [button selectItem:[button.menu itemArray][selectedIndex]];
         view = button;
         break;
@@ -445,7 +595,7 @@ NSObject* getPrefOption(NSString* key){
  */
 - (CGFloat)tableView:(NSTableView *)tableView heightOfRow:(NSInteger)row{
   CGFloat baseHeight = 26;
-  // Add 12pt padding below Display Renderer, Default Display, and Display Names rows
+  // Add 12pt padding below Display Renderer, Default Source, and Source Names rows
   if(row == 1 || row == 2 || row == 3){
     return baseHeight + 12;
   }
@@ -480,26 +630,27 @@ NSObject* getPrefOption(NSString* key){
 
 @end
 
-#pragma mark - Display Names Panel
+#pragma mark - Source Names Panel
 
-@interface DisplayNamesPanel : NSPanel<NSWindowDelegate, NSTableViewDelegate, NSTableViewDataSource, NSTextFieldDelegate>
+@interface SourceNamesPanel : NSPanel<NSWindowDelegate, NSTableViewDelegate, NSTableViewDataSource, NSTextFieldDelegate>
 @property (nonatomic, strong) NSTableView* tableView;
-@property (nonatomic, strong) NSMutableArray* displayData;
+@property (nonatomic, strong) NSMutableArray* sourceData;
 @property (nonatomic, strong) NSMutableArray* textFields;
 @property (nonatomic, strong) NSButton* okButton;
 - (void)refreshPreferencesWindow;
+- (void)loadSourceData;
 - (void)completeTabOrder;
 @end
 
-@implementation DisplayNamesPanel
+@implementation SourceNamesPanel
 
 /**
- * Initializes the display names panel.
+ * Initializes the source names panel.
  * @return The initialized panel
  */
 -(id)init{
   self = [super
-          initWithContentRect:NSMakeRect(0, 0, 450, 200)
+          initWithContentRect:NSMakeRect(0, 0, 480, 240)
           styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
           backing:NSBackingStoreBuffered defer:YES
   ];
@@ -507,29 +658,26 @@ NSObject* getPrefOption(NSString* key){
   self.level = NSFloatingWindowLevel;
   self.collectionBehavior = NSWindowCollectionBehaviorManaged | NSWindowCollectionBehaviorParticipatesInCycle;
   self.becomesKeyOnlyIfNeeded = NO;
-  [self setTitle:@"Display Names"];
+  [self setTitle:@"Source Names"];
 
-  [self loadDisplayData];
+  [self loadSourceData];
   _textFields = [[NSMutableArray alloc] init];
 
   NSView* rootView = [[NSView alloc] init];
   rootView.translatesAutoresizingMaskIntoConstraints = false;
 
-  // Create scroll view for table
   NSScrollView* scrollView = [[NSScrollView alloc] init];
   scrollView.hasHorizontalScroller = false;
   scrollView.hasVerticalScroller = true;
   scrollView.translatesAutoresizingMaskIntoConstraints = false;
   [rootView addSubview:scrollView];
 
-  // Create OK button
   _okButton = [NSButton buttonWithTitle:@"OK" target:self action:@selector(onOKClick:)];
   _okButton.translatesAutoresizingMaskIntoConstraints = false;
   _okButton.bezelStyle = NSBezelStyleRounded;
-  _okButton.keyEquivalent = @"\r"; // Enter key
+  _okButton.keyEquivalent = @"\r";
   [rootView addSubview:_okButton];
 
-  // Layout constraints
   [rootView addConstraint:[NSLayoutConstraint constraintWithItem:scrollView attribute:NSLayoutAttributeLeft relatedBy:NSLayoutRelationEqual toItem:rootView attribute:NSLayoutAttributeLeft multiplier:1 constant:0]];
   [rootView addConstraint:[NSLayoutConstraint constraintWithItem:scrollView attribute:NSLayoutAttributeRight relatedBy:NSLayoutRelationEqual toItem:rootView attribute:NSLayoutAttributeRight multiplier:1 constant:0]];
   [rootView addConstraint:[NSLayoutConstraint constraintWithItem:scrollView attribute:NSLayoutAttributeTop relatedBy:NSLayoutRelationEqual toItem:rootView attribute:NSLayoutAttributeTop multiplier:1 constant:0]];
@@ -549,13 +697,13 @@ NSObject* getPrefOption(NSString* key){
   _tableView.rowHeight = 28;
 
   NSTableColumn* systemNameCol = [[NSTableColumn alloc] initWithIdentifier:@"systemName"];
-  systemNameCol.title = @"System Name";
-  systemNameCol.width = 150;
+  systemNameCol.title = @"Source";
+  systemNameCol.width = 220;
   [_tableView addTableColumn:systemNameCol];
 
   NSTableColumn* customNameCol = [[NSTableColumn alloc] initWithIdentifier:@"customName"];
   customNameCol.title = @"Custom Name";
-  customNameCol.width = 250;
+  customNameCol.width = 240;
   [_tableView addTableColumn:customNameCol];
 
   scrollView.documentView = _tableView;
@@ -566,33 +714,20 @@ NSObject* getPrefOption(NSString* key){
   NSPoint point = NSMakePoint(screenSize.width/2 - windowSize.width/2, screenSize.height/2 - windowSize.height/2);
   [self setFrameOrigin:point];
 
-  // Complete tab order after table is set up
   [_tableView reloadData];
   [self completeTabOrder];
 
   return self;
 } // End of init()
 
-/**
- * Called when OK button is clicked. Commits pending edits and closes the panel.
- * @param sender The button that was clicked
- */
 - (void)onOKClick:(NSButton*)sender{
-  // Commit any pending text field edits by resigning first responder
   [self makeFirstResponder:nil];
-
-  // Update preferences window immediately
   [self refreshPreferencesWindow];
-
   [self close];
 } // End of onOKClick()
 
-/**
- * Refreshes the preferences window to show updated display names.
- */
 - (void)refreshPreferencesWindow{
   if(global_pref){
-    // Find the table view in the preferences window and reload it
     NSView* contentView = [global_pref contentView];
     for(NSView* subview in contentView.subviews){
       if([subview isKindOfClass:[NSScrollView class]]){
@@ -608,10 +743,12 @@ NSObject* getPrefOption(NSString* key){
 } // End of refreshPreferencesWindow()
 
 /**
- * Loads display data from connected screens.
+ * Loads source data from connected displays and cameras.
  */
-- (void)loadDisplayData{
-  _displayData = [[NSMutableArray alloc] init];
+- (void)loadSourceData{
+  _sourceData = [[NSMutableArray alloc] init];
+
+  NSMutableArray* displayData = [[NSMutableArray alloc] init];
   for(NSScreen* screen in [NSScreen screens]){
     NSDictionary* dict = [screen deviceDescription];
     CGDirectDisplayID did = [dict[@"NSScreenNumber"] unsignedIntValue];
@@ -620,22 +757,44 @@ NSObject* getPrefOption(NSString* key){
     NSString* customName = getCustomDisplayNameForId(did);
     if(!customName) customName = @"";
 
-    [_displayData addObject:[@{
+    [displayData addObject:[@{
+      @"type": @"display",
       @"id": [NSNumber numberWithUnsignedInt:did],
-      @"systemName": systemName,
-      @"customName": customName
+      @"systemName": [NSString stringWithFormat:@"Display - %@", systemName],
+      @"customName": customName,
     } mutableCopy]];
   } // End of loop through screens
-} // End of loadDisplayData()
+  [displayData sortUsingComparator:^NSComparisonResult(NSDictionary* a, NSDictionary* b) {
+    return [a[@"systemName"] localizedCaseInsensitiveCompare:b[@"systemName"]];
+  }];
+  [_sourceData addObjectsFromArray:displayData];
 
-/**
- * Completes the circular tab order for keyboard navigation.
- * Chain: first text field -> ... -> last text field -> OK button -> first text field
- */
+  NSMutableArray* cameraData = [[NSMutableArray alloc] init];
+  NSArray<AVCaptureDevice*>* cameras = [AVCaptureDevice devicesWithMediaType:AVMediaTypeVideo];
+  for(AVCaptureDevice* camera in cameras){
+    NSString* cameraId = [camera uniqueID];
+    if(!cameraId || cameraId.length == 0) continue;
+    NSString* systemName = [camera localizedName];
+    if(!systemName || systemName.length == 0) systemName = @"Camera";
+    NSString* customName = getCustomCameraNameForId(cameraId);
+    if(!customName) customName = @"";
+
+    [cameraData addObject:[@{
+      @"type": @"camera",
+      @"id": cameraId,
+      @"systemName": [NSString stringWithFormat:@"Camera - %@", systemName],
+      @"customName": customName,
+    } mutableCopy]];
+  } // End of loop through cameras
+  [cameraData sortUsingComparator:^NSComparisonResult(NSDictionary* a, NSDictionary* b) {
+    return [a[@"systemName"] localizedCaseInsensitiveCompare:b[@"systemName"]];
+  }];
+  [_sourceData addObjectsFromArray:cameraData];
+} // End of loadSourceData()
+
 - (void)completeTabOrder{
   if(_textFields.count == 0) return;
 
-  // Find first and last valid text fields
   NSTextField* firstField = nil;
   NSTextField* lastField = nil;
 
@@ -653,28 +812,27 @@ NSObject* getPrefOption(NSString* key){
 } // End of completeTabOrder()
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView{
-  return _displayData.count;
+  return _sourceData.count;
 }
 
 - (nullable NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(nullable NSTableColumn *)tableColumn row:(NSInteger)row{
   NSTableCellView* cell = [[NSTableCellView alloc] init];
-  NSMutableDictionary* display = _displayData[row];
+  NSMutableDictionary* source = _sourceData[row];
 
   if([tableColumn.identifier isEqual:@"systemName"]){
     NSTextField* text = [[NSTextField alloc] init];
-    NSString* systemName = display[@"systemName"];
+    NSString* systemName = source[@"systemName"];
     if(systemName && systemName.length > 0){
       text.stringValue = systemName;
       text.textColor = [NSColor secondaryLabelColor];
     } else {
-      text.stringValue = @"(Unknown display)";
-      // Use italic font for placeholder
+      text.stringValue = @"(Unknown source)";
       NSFont* currentFont = [NSFont systemFontOfSize:[NSFont systemFontSize]];
       NSFontDescriptor* italicDescriptor = [currentFont.fontDescriptor fontDescriptorWithSymbolicTraits:NSFontDescriptorTraitItalic];
       if(italicDescriptor){
         text.font = [NSFont fontWithDescriptor:italicDescriptor size:currentFont.pointSize];
       }
-      text.textColor = [NSColor tertiaryLabelColor]; // More muted than secondaryLabelColor
+      text.textColor = [NSColor tertiaryLabelColor];
     }
     text.editable = false;
     text.drawsBackground = false;
@@ -686,9 +844,9 @@ NSObject* getPrefOption(NSString* key){
     [cell addConstraint:[NSLayoutConstraint constraintWithItem:text attribute:NSLayoutAttributeRight relatedBy:NSLayoutRelationEqual toItem:cell attribute:NSLayoutAttributeRight multiplier:1 constant:-8]];
   } else if([tableColumn.identifier isEqual:@"customName"]){
     NSTextField* textField = [[NSTextField alloc] init];
-    textField.stringValue = display[@"customName"];
-    NSString* systemName = display[@"systemName"];
-    textField.placeholderString = (systemName && systemName.length > 0) ? systemName : @"Enter display name";
+    textField.stringValue = source[@"customName"];
+    NSString* systemName = source[@"systemName"];
+    textField.placeholderString = (systemName && systemName.length > 0) ? systemName : @"Enter source name";
     textField.editable = YES;
     textField.selectable = YES;
     textField.bezeled = YES;
@@ -700,13 +858,11 @@ NSObject* getPrefOption(NSString* key){
     textField.tag = row;
     textField.cell.scrollable = YES;
 
-    // Add to text fields array for tab navigation
     while(_textFields.count <= (NSUInteger)row){
       [_textFields addObject:[NSNull null]];
     }
     _textFields[row] = textField;
 
-    // Set up tab order
     if(row > 0 && _textFields.count > 1 && _textFields[row-1] != [NSNull null]){
       NSTextField* prevField = _textFields[row-1];
       [prevField setNextKeyView:textField];
@@ -727,29 +883,25 @@ NSObject* getPrefOption(NSString* key){
 - (void)controlTextDidEndEditing:(NSNotification *)notification{
   NSTextField* textField = notification.object;
   NSInteger row = textField.tag;
-  if(row >= 0 && row < (NSInteger)_displayData.count){
-    NSMutableDictionary* display = _displayData[row];
+  if(row >= 0 && row < (NSInteger)_sourceData.count){
+    NSMutableDictionary* source = _sourceData[row];
     NSString* newName = textField.stringValue;
-    display[@"customName"] = newName;
-    CGDirectDisplayID displayId = [display[@"id"] unsignedIntValue];
-    setCustomDisplayName(displayId, newName);
+    source[@"customName"] = newName;
+
+    NSString* type = source[@"type"];
+    if([type isEqualToString:@"display"]){
+      CGDirectDisplayID displayId = [source[@"id"] unsignedIntValue];
+      setCustomDisplayName(displayId, newName);
+    } else if([type isEqualToString:@"camera"]){
+      setCustomCameraName(source[@"id"], newName);
+    }
   }
 } // End of controlTextDidEndEditing()
 
-/**
- * Handles special key commands in text fields, including Shift+Tab for backward navigation.
- * @param control The control sending the command
- * @param textView The field editor
- * @param commandSelector The command selector
- * @return YES if the command was handled, NO otherwise
- */
 - (BOOL)control:(NSControl *)control textView:(NSTextView *)textView doCommandBySelector:(SEL)commandSelector{
   if(commandSelector == @selector(insertBacktab:)){
-    // Shift+Tab pressed - move to previous field
     NSTextField* currentField = (NSTextField*)control;
     NSInteger currentRow = currentField.tag;
-
-    // Find previous text field
     for(NSInteger i = currentRow - 1; i >= 0; i--){
       if(i < (NSInteger)_textFields.count && _textFields[i] != [NSNull null]){
         NSTextField* prevField = _textFields[i];
@@ -757,8 +909,6 @@ NSObject* getPrefOption(NSString* key){
         return YES;
       }
     } // End of loop searching for previous field
-
-    // If at first field, wrap to OK button
     if(_okButton){
       [self makeFirstResponder:_okButton];
       return YES;
@@ -784,17 +934,18 @@ NSObject* getPrefOption(NSString* key){
 
 - (void)windowWillClose:(NSNotification *)notification{
   [self refreshPreferencesWindow];
-  displayNamesPanel = nil;
+  sourceNamesPanel = nil;
 }
 
 @end
 
-/**
- * Shows the display names configuration panel.
- */
-void showDisplayNamesPanel(void){
-  if(!displayNamesPanel){
-    displayNamesPanel = [[DisplayNamesPanel alloc] init];
+void showSourceNamesPanel(void){
+  if(!sourceNamesPanel){
+    sourceNamesPanel = [[SourceNamesPanel alloc] init];
   }
-  [displayNamesPanel makeKeyAndOrderFront:nil];
+  [sourceNamesPanel makeKeyAndOrderFront:nil];
+} // End of showSourceNamesPanel()
+
+void showDisplayNamesPanel(void){
+  showSourceNamesPanel();
 } // End of showDisplayNamesPanel()
