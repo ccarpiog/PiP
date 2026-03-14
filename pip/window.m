@@ -842,6 +842,7 @@ static void displayReconfigurationCallback(CGDirectDisplayID display, CGDisplayC
   // Camera audio capture and playback using AVCaptureAudioPreviewOutput
   AVCaptureAudioPreviewOutput* camera_audio_preview;
   bool camera_audio_enabled;
+  bool camera_audio_monitoring;  // Local audio monitoring (does not affect HLS streaming)
   bool camera_has_microphone;
 #if __has_include(<ScreenCaptureKit/ScreenCaptureKit.h>)
   SCStream *window_stream API_AVAILABLE(macos(12.3));
@@ -884,6 +885,7 @@ static void displayReconfigurationCallback(CGDirectDisplayID display, CGDisplayC
   // Initialize camera audio variables
   camera_audio_preview = nil;
   camera_audio_enabled = true;  // Enabled by default
+  camera_audio_monitoring = true;  // Local monitoring enabled by default
   camera_has_microphone = false;
 #if __has_include(<ScreenCaptureKit/ScreenCaptureKit.h>)
   if (@available(macOS 12.3, *)) {
@@ -2142,10 +2144,10 @@ end:
       })
     }
 
-    // Audio monitoring toggle
+    // Local audio monitoring toggle (does not affect HLS streaming)
     if(camera_has_microphone) {
-      ADD_MENU_ITEM(theMenu, @"Audio Monitoring", @selector(toggleCameraAudio:), NULL, {
-        if(camera_audio_enabled) {
+      ADD_MENU_ITEM(theMenu, @"Local Audio Monitoring", @selector(toggleCameraAudio:), NULL, {
+        if(camera_audio_monitoring) {
           [item setState:NSControlStateValueOn];
         }
       })
@@ -2573,7 +2575,7 @@ end:
           // Use AVCaptureAudioPreviewOutput for automatic audio playback
           // This handles all format conversion automatically
           AVCaptureAudioPreviewOutput *audioPreview = [[AVCaptureAudioPreviewOutput alloc] init];
-          audioPreview.volume = 1.0;  // Full volume
+          audioPreview.volume = camera_audio_monitoring ? 1.0 : 0.0;
           audioPreview.outputDeviceUniqueID = nil;  // Use default output device
 
           if(![session canAddOutput:audioPreview]) {
@@ -3508,29 +3510,18 @@ end:
 } // End of selectCameraResolution:
 
 /**
- * Toggles camera audio monitoring on/off.
+ * Toggles local camera audio monitoring on/off.
+ * Only affects the local audio preview volume; audio capture and HLS streaming are not affected.
  * @param sender The menu item that triggered this action
  */
 -(void)toggleCameraAudio:(id)sender {
-  camera_audio_enabled = !camera_audio_enabled;
+  camera_audio_monitoring = !camera_audio_monitoring;
 
-  if(camera_audio_enabled && camera_id && camera_has_microphone) {
-    // Restart camera capture to enable audio
-    NSString *currentCameraId = [camera_id copy];
-    [self startCameraCapture:currentCameraId];
-  } else if(!camera_audio_enabled) {
-    // Mute audio by setting volume to 0, or remove output
-    if(camera_audio_preview) {
-      camera_audio_preview.volume = 0.0;
-    }
-  } else {
-    // Unmute audio
-    if(camera_audio_preview) {
-      camera_audio_preview.volume = 1.0;
-    }
+  if(camera_audio_preview) {
+    camera_audio_preview.volume = camera_audio_monitoring ? 1.0 : 0.0;
   }
 
-  NSLog(@"Camera audio monitoring %@", camera_audio_enabled ? @"enabled" : @"disabled");
+  NSLog(@"Local camera audio monitoring %@", camera_audio_monitoring ? @"enabled" : @"disabled");
 } // End of toggleCameraAudio:
 
 - (void)updateHLSInputViewLayout {
