@@ -2238,9 +2238,10 @@ end:
   if (success) {
     NSString *url = [streamManager streamURL];
     NSLog(@"Streaming started at %@", url);
-    // Copy URL to clipboard automatically
+    // Copy direct stream URL to clipboard automatically
+    NSString *directURL = [url stringByAppendingString:@"/stream.m3u8"];
     [[NSPasteboard generalPasteboard] clearContents];
-    [[NSPasteboard generalPasteboard] setString:url forType:NSPasteboardTypeString];
+    [[NSPasteboard generalPasteboard] setString:directURL forType:NSPasteboardTypeString];
   }
 } // End of startStreamAction:
 
@@ -2260,8 +2261,9 @@ end:
   if (streamManager && [streamManager isStreaming]) {
     NSString *url = [streamManager streamURL];
     if (url) {
+      NSString *directURL = [url stringByAppendingString:@"/stream.m3u8"];
       [[NSPasteboard generalPasteboard] clearContents];
-      [[NSPasteboard generalPasteboard] setString:url forType:NSPasteboardTypeString];
+      [[NSPasteboard generalPasteboard] setString:directURL forType:NSPasteboardTypeString];
     }
   }
 } // End of copyStreamURL:

@@ -38,7 +38,7 @@ PiP can stream any preview window over your local network using HLS (HTTP Live S
 1. Right-click any active preview window and select **Stream > Start Streaming**
 2. The stream URL (e.g. `http://192.168.1.42:8080`) appears at the bottom of the Stream menu
 3. Open that URL on any device's browser to watch the live stream
-4. Use **Copy URL** or **Open in Browser** for quick access
+4. Use **Copy URL** to copy the direct HLS stream URL (`/stream.m3u8`) or **Open in Browser** to open the web viewer
 
 ### Quality presets
 | Preset | Resolution | Bitrate | FPS |
