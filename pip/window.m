@@ -1989,7 +1989,7 @@ static void displayReconfigurationCallback(CGDirectDisplayID display, CGDisplayC
     })
   }
 
-  ADD_MENU_ITEM(theMenu, @"Stream HLS", @selector(loadHLSStream:), GET_REL_IMG(hls))
+  ADD_MENU_ITEM(theMenu, @"Open Stream URL…", @selector(loadHLSStream:), GET_REL_IMG(hls))
 #ifndef NO_AIRPLAY
   if (airplay_sender_enabled && [self is_capturing]) {
     // Show start/stop options based on senderQueue state
@@ -2034,12 +2034,12 @@ static void displayReconfigurationCallback(CGDirectDisplayID display, CGDisplayC
     NSMenu *streamMenu = [[NSMenu alloc] init];
 
     if (streamManager && [streamManager isStreaming]) {
-      ADD_MENU_ITEM(streamMenu, @"Stop Streaming", @selector(stopStreamAction:), NULL)
+      ADD_MENU_ITEM(streamMenu, @"Stop Broadcasting", @selector(stopStreamAction:), NULL)
       [streamMenu addItem:[NSMenuItem separatorItem]];
       ADD_MENU_ITEM(streamMenu, @"Copy URL", @selector(copyStreamURL:), NULL)
       ADD_MENU_ITEM(streamMenu, @"Open in Browser", @selector(openStreamInBrowser:), NULL)
     } else {
-      ADD_MENU_ITEM(streamMenu, @"Start Streaming", @selector(startStreamAction:), NULL)
+      ADD_MENU_ITEM(streamMenu, @"Broadcast This Window", @selector(startStreamAction:), NULL)
     }
 
     [streamMenu addItem:[NSMenuItem separatorItem]];
@@ -2074,7 +2074,7 @@ static void displayReconfigurationCallback(CGDirectDisplayID display, CGDisplayC
       }
     }
 
-    ADD_MENU_ITEM(theMenu, @"Stream", nil, NULL, {
+    ADD_MENU_ITEM(theMenu, @"Broadcast", nil, NULL, {
       [item setSubmenu:streamMenu];
     })
   }

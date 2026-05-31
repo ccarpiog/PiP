@@ -89,8 +89,8 @@ static WindowManagerPanel* windowManagerPanel = nil;
   INIT_MENU(@"File");
   ADD_ITEM(@"New", newWindow, @"n");
   ADD_ITEM_MASK(@"Clone Window", cloneCurrentWindow, @"n", NSEventModifierFlagCommand | NSEventModifierFlagShift);
-  ADD_ITEM(@"Stream HLS", loadHLSStream:, @"l");
-  ADD_ITEM_MASK(@"Start Streaming", startStreamCurrentWindow, @"s", NSEventModifierFlagCommand | NSEventModifierFlagShift);
+  ADD_ITEM(@"Open Stream URL…", loadHLSStream:, @"l");
+  ADD_ITEM_MASK(@"Broadcast This Window", startStreamCurrentWindow, @"s", NSEventModifierFlagCommand | NSEventModifierFlagShift);
   ADD_ITEM(@"Click Through", clickThrough:, @"c");
   ADD_ITEM(@"Close", performClose:, @"w");
 

@@ -35,8 +35,8 @@ Always on top window preview with AirPlay receiver support (if on macOS 12+, tur
 PiP can stream any preview window over your local network using HLS (HTTP Live Streaming). Any device with a web browser on the same network can watch the live feed.
 
 ### How to use
-1. Right-click any active preview window and select **Stream > Start Streaming**
-2. The stream URL (e.g. `http://192.168.1.42:8080`) appears at the bottom of the Stream menu
+1. Right-click any active preview window and select **Broadcast > Broadcast This Window**
+2. The stream URL (e.g. `http://192.168.1.42:8080`) appears at the bottom of the Broadcast menu
 3. Open that URL on any device's browser to watch the live stream
 4. Use **Copy URL** to copy the direct HLS stream URL (`/stream.m3u8`) or **Open in Browser** to open the web viewer
 
@@ -47,7 +47,7 @@ PiP can stream any preview window over your local network using HLS (HTTP Live S
 | Medium | 1080p     | 3 Mbps   | 30 |
 | High   | Native    | 6 Mbps   | 30 |
 
-Change quality on the fly via **Stream > Quality**.
+Change quality on the fly via **Broadcast > Quality**.
 
 ### Architecture
 The streaming pipeline is fully self-contained with no third-party dependencies:
